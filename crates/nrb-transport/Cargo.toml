@@ -1,0 +1,23 @@
+[package]
+name = "nrb-transport"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Транспорт браузера: потоки через NRXP (netrunner-core) без TUN и root"
+
+[dependencies]
+# Worktree соседнего netrunner-proxy с нашими патчами (patches/proxy); создаётся scripts/setup-upstream.sh.
+netrunner-core = { path = "../../.nrb-dev/netrunner-proxy/core", features = ["ring-aead"] }
+async-trait = "0.1"
+bytes = "1"
+dashmap = "6"
+serde = { version = "1", features = ["derive"] }
+thiserror.workspace = true
+tokio = { workspace = true }
+tokio-util = "0.7"
+toml = "0.9"
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

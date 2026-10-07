@@ -1,0 +1,57 @@
+From 90c992cb57401e81592873b02a1ae18c9834596e Mon Sep 17 00:00:00 2001
+From: nineap <trkir21@gmail.com>
+Date: Wed, 7 Oct 2026 19:16:02 +0700
+Subject: [PATCH] =?UTF-8?q?fix(muxer):=20Connect-=D0=BA=D0=B0=D0=B4=D1=80?=
+ =?UTF-8?q?=D1=8B=20=D0=B4=D0=BE=D1=81=D1=82=D0=B0=D0=B2=D0=BB=D1=8F=D1=8E?=
+ =?UTF-8?q?=D1=82=D1=81=D1=8F=20=D0=BD=D0=B0=D0=B4=D1=91=D0=B6=D0=BD=D0=BE?=
+ =?UTF-8?q?,=20=D0=B0=20=D0=BD=D0=B5=20=D1=82=D0=B5=D1=80=D1=8F=D1=8E?=
+ =?UTF-8?q?=D1=82=D1=81=D1=8F=20=D0=BF=D1=80=D0=B8=20=D0=B7=D0=B0=D0=BF?=
+ =?UTF-8?q?=D0=BE=D0=BB=D0=BD=D0=B5=D0=BD=D0=BD=D0=BE=D0=B9=20=D0=BE=D1=87?=
+ =?UTF-8?q?=D0=B5=D1=80=D0=B5=D0=B4=D0=B8=20=D0=BD=D0=BE=D0=B3=D0=B8?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+send_to_network относил Connect к некритичным управляющим кадрам и отбрасывал его через try_send, когда
+control-очередь ноги (16 слотов) заполнена. Connect не ретраится и без ack, поэтому локальный сокет
+зависал навсегда. Всплыло при открытии 16+ потоков одновременно (браузер): часть потоков не получала
+ни байта. Теперь Connect шлётся .send().await, как Close/Heartbeat/Credit (вызывающий — задача одного
+потока, общий цикл не блокируется).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ core/src/net/connection/muxer.rs | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/core/src/net/connection/muxer.rs b/core/src/net/connection/muxer.rs
+index b0f5d2c..e2f0486 100644
+--- a/core/src/net/connection/muxer.rs
++++ b/core/src/net/connection/muxer.rs
+@@ -1337,9 +1337,23 @@ impl Muxer {
+             // Heartbeat (PONG): dropping it via try_send causes the health-check
+             // probe to time out after HEALTH_CHECK_TIMEOUT and evict a live leg.
+             // Credit too: a dropped grant would leave the sender blocked until the next one.
++            // Connect too (all variants): a dropped Connect is never retried and carries no
++            // ack, so the local socket would hang forever — which a browser opening dozens
++            // of connections at once hit constantly (the 16-slot control queue of a leg
++            // overflowed and the surplus Connects vanished with only a rate-limited WARN).
++            // The caller of a Connect is a per-stream task, so awaiting here stalls only
++            // that one stream, never the shared loop.
+             let is_critical = matches!(
+                 message.frame_type,
+-                FrameType::Close | FrameType::Heartbeat | FrameType::Credit
++                FrameType::Close
++                    | FrameType::Heartbeat
++                    | FrameType::Credit
++                    | FrameType::Connect
++                    | FrameType::UdpConnect
++                    | FrameType::SecureConnect
++                    | FrameType::SecureUdpConnect
++                    | FrameType::MeshOnionConnect
++                    | FrameType::MeshOnionUdpConnect
+             );
+ 
+             if is_critical {
+-- 
+2.43.0
+

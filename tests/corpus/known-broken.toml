@@ -1,0 +1,34 @@
+# Сайты, про которые известно, что они не проходят. Не роняют прогон и не входят в процент для ratchet, но попадают в отчёт.
+# Формат: [[broken]] id = "…", reason = "…"
+
+[[broken]]
+id = "neverssl"
+reason = "среда: порт 80 (plain HTTP) недоступен из этой сети — curl тоже молчит; не дефект браузера"
+
+[[broken]]
+id = "stackoverflow"
+reason = "Cloudflare-челлендж («Just a moment…»): антибот требует JS/куки-проверку, которую Servo не проходит"
+
+[[broken]]
+id = "ebay"
+reason = "антибот-страница «Pardon Our Interruption»"
+
+[[broken]]
+id = "react"
+reason = "react.dev: «Application error: a client-side exception» — реальный JS-сбой в Servo, требует разбора (I13)"
+
+[[broken]]
+id = "yandex"
+reason = "пустой кадр без заголовка; не исследовано (возможен антибот/капча)"
+
+[[broken]]
+id = "amazon"
+reason = "пустой кадр без заголовка; не исследовано (возможен антибот)"
+
+[[broken]]
+id = "twitch"
+reason = "не дозагружается за 55 с даже в режиме partial; тяжёлое SPA, не исследовано"
+
+[[broken]]
+id = "svelte"
+reason = "заголовок «500» — страница ошибки на стороне сайта или несовместимость; не исследовано"

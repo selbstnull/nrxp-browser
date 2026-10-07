@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>dialogs: ready</title>
+<style>button,select{position:absolute;left:20px;width:320px;height:50px;font-size:22px}</style>
+<button style="top:10px"  onclick="alert('привет из alert'); document.title='alert: done'">alert</button>
+<button style="top:80px"  onclick="document.title='confirm: ' + confirm('Точно?')">confirm</button>
+<button style="top:150px" onclick="document.title='prompt: ' + prompt('Имя?', 'по умолчанию')">prompt</button>
+<select id=s style="top:220px" onchange="document.title='select: ' + this.value">
+  <option value=a>первый</option><option value=b>второй</option><option value=c>третий</option>
+</select>
+<button style="top:290px" onclick="try{Notification.requestPermission().then(p=>document.title='notif: '+p)}catch(e){document.title='notif: exception '+e}">notifications</button>

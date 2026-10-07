@@ -1,0 +1,28 @@
+<!doctype html><meta charset=utf-8><title>storage: loading</title>
+<body><pre id=o></pre>
+<script>
+const out = {};
+const done = () => { document.title = 'storage: ' + JSON.stringify(out); };
+// cookie
+out.cookie = document.cookie.includes('nrb_c=1') ? 'present' : 'set';
+document.cookie = 'nrb_c=1; max-age=3600; path=/';
+// localStorage
+out.ls = localStorage.getItem('nrb_l') === '1' ? 'present' : 'set';
+localStorage.setItem('nrb_l', '1');
+// IndexedDB
+try {
+  const req = indexedDB.open('nrb', 1);
+  req.onupgradeneeded = () => req.result.createObjectStore('s');
+  req.onsuccess = () => {
+    const db = req.result;
+    const get = db.transaction('s').objectStore('s').get('k');
+    get.onsuccess = () => {
+      out.idb = get.result === 'v' ? 'present' : 'set';
+      const tx = db.transaction('s', 'readwrite'); tx.objectStore('s').put('v', 'k');
+      tx.oncomplete = () => { db.close(); done(); };
+    };
+  };
+  req.onerror = () => { out.idb = 'error'; done(); };
+} catch (e) { out.idb = 'exception'; done(); }
+setTimeout(done, 3000);
+</script>

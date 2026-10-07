@@ -1,0 +1,13 @@
+<!doctype html><meta charset=utf-8><title>ws: connecting</title>
+<body style="font:24px sans-serif"><p id=o>…</p>
+<script>
+const url = location.hash.slice(1) || 'wss://echo.websocket.org/';
+const log = m => { document.title = 'ws: ' + m; o.textContent = m; };
+try {
+  const ws = new WebSocket(url);
+  ws.onopen = () => { log('open'); ws.send('hello-nrb'); };
+  ws.onmessage = e => { if (String(e.data).includes('hello-nrb')) log('echo ok: ' + e.data); };
+  ws.onerror = () => log('error');
+  ws.onclose = e => { if (!document.title.includes('echo ok')) log('closed ' + e.code); };
+} catch (e) { log('exception ' + e); }
+</script>

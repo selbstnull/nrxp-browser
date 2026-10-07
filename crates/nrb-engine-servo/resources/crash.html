@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Вкладка завершилась аварийно</title>
+<style>
+  body { font: 16px/1.5 sans-serif; background: #f4f4f6; color: #222; margin: 0; }
+  main { max-width: 640px; margin: 12vh auto; padding: 0 24px; }
+  h1 { font-size: 26px; margin: 0 0 8px; }
+  .card { background: #fff; border-radius: 10px; padding: 24px 28px; box-shadow: 0 1px 6px #0002; }
+  pre { background: #eee; padding: 10px; border-radius: 6px; overflow: auto; max-height: 240px; }
+  button { font-size: 16px; padding: 8px 18px; border-radius: 6px; border: 1px solid #888; background: #fafafa; cursor: pointer; }
+</style>
+</head>
+<body>
+<main><div class="card">
+  <h1>Вкладка завершилась аварийно</h1>
+  <p>Движок страницы остановился. Остальные вкладки не затронуты.</p>
+  <!-- NOTE: в отличие от Firefox и Chrome, перезагрузка делает GET даже для POST-страниц (whatwg/html#6600, #3215) -->
+  <button onclick="location.reload()">Перезагрузить</button>
+  <pre><plaintext>
+${details}

@@ -1,0 +1,30 @@
+[package]
+name = "nrb"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "netrunner-browser: браузер + узел NRXP"
+
+[features]
+default = []
+# Движок Servo (тяжёлая сборка). Без неё бинарь собирается за секунды — для узла/тестов.
+servo = ["dep:nrb-engine-servo", "dep:nrb-shell"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+nrb-engine = { path = "../crates/nrb-engine" }
+nrb-net = { path = "../crates/nrb-net" }
+nrb-node = { path = "../crates/nrb-node" }
+nrb-transport = { path = "../crates/nrb-transport" }
+tokio.workspace = true
+nrb-engine-servo = { path = "../crates/nrb-engine-servo", optional = true }
+nrb-shell = { path = "../crates/nrb-shell", optional = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+humantime = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
