@@ -104,3 +104,7 @@ QUIC-клиент шлёт Initial ≥ 1200 байт → всегда по TCP-�
 HTTP/HTTPS/fetch/XHR/подресурсы/favicon/воркеры — через прокси Servo (проверено `leakwatch`: внешних сокетов нет). **WebSocket** — прямой `TcpStream::connect` в `servo-net/websocket_loader.rs` (+локальный DNS) → патч.
 Сам прокси: только HTTP CONNECT с Basic-auth из URL; SOCKS не поддерживается; `network_http_no_proxy` игнорируется патчем WS.
 Метод проверки на будущее при апгрейде Servo: `scripts/leakwatch.sh` + `tests/fixtures/ws.html` + прогон части корпуса; после апгрейда пересобрать патч (`patches/servo`) — формат файла `websocket_loader.rs` может поменяться.
+
+### S3 — reverse-egress (2026-10-07) — **да**
+Вердикт и план из четырёх патчей ядра — в ITERATIONS.md → I5.s «Итог». Ключевое наблюдение: `TunnelEngine` строится одинаково на обеих сторонах; серверная роль — это `StreamHandler` с `RemoteOpener`.
+Не проверено запуском (только чтение кода) — первая задача I9 — игрушечный стенд из двух процессов.
