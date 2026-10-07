@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use nrb_engine::Size;
 use url::Url;
 
+mod corpus;
 mod gui;
 mod snap;
 
@@ -45,6 +46,42 @@ enum Command {
         /// Прокси для движка, например http://127.0.0.1:3128.
         #[arg(long)]
         proxy: Option<String>,
+        /// Машиночитаемый отчёт (JSON в одну строку) в stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Прогнать корпус сайтов (по одному процессу `nrb snap` на сайт) и собрать отчёт совместимости.
+    Corpus {
+        /// Файл со списком сайтов.
+        #[arg(long, default_value = "tests/corpus/sites.toml")]
+        sites: PathBuf,
+        /// Файл с известными нерабочими сайтами.
+        #[arg(long, default_value = "tests/corpus/known-broken.toml")]
+        known_broken: PathBuf,
+        /// Файл baseline (ratchet): прогон падает, если процент ниже.
+        #[arg(long, default_value = "tests/corpus/baseline.json")]
+        baseline: PathBuf,
+        /// Каталог отчёта; по умолчанию out/corpus/<время>.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Только эти категории (через запятую).
+        #[arg(long, value_delimiter = ',')]
+        category: Vec<String>,
+        /// Только сайты, id которых содержит эту подстроку.
+        #[arg(long)]
+        filter: Option<String>,
+        /// Сколько сайтов обрабатывать одновременно.
+        #[arg(long, default_value_t = 2)]
+        parallel: usize,
+        /// Таймаут одного сайта.
+        #[arg(long, default_value = "30s", value_parser = humantime::parse_duration)]
+        timeout: Duration,
+        /// Прокси для движка (передаётся каждому `nrb snap`).
+        #[arg(long)]
+        proxy: Option<String>,
+        /// Не падать из-за baseline (только отчёт).
+        #[arg(long)]
+        no_ratchet: bool,
     },
     /// Версия.
     Version,
@@ -64,6 +101,7 @@ fn main() {
             timeout,
             settle,
             proxy,
+            json,
         }) => snap::run(snap::Args {
             url,
             output,
@@ -71,6 +109,30 @@ fn main() {
             timeout,
             settle,
             proxy,
+            json,
+        }),
+        Some(Command::Corpus {
+            sites,
+            known_broken,
+            baseline,
+            out,
+            category,
+            filter,
+            parallel,
+            timeout,
+            proxy,
+            no_ratchet,
+        }) => corpus::run(corpus::Args {
+            sites,
+            known_broken,
+            baseline,
+            out,
+            category,
+            filter,
+            parallel,
+            timeout,
+            proxy,
+            no_ratchet,
         }),
         Some(Command::Version) => {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));

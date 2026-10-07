@@ -1,0 +1,343 @@
+# Корпус совместимости I3. `expect` — подстрока заголовка (без учёта регистра); пустая — не проверяем.
+# Сайты меняются: подписи слабые намеренно. Добавлять сайты можно свободно, id — стабильный ключ в отчётах.
+
+[[site]]
+id = "example"
+category = "static"
+url = "https://example.org/"
+expect = "Example Domain"
+
+[[site]]
+id = "cern"
+category = "static"
+url = "http://info.cern.ch/"
+expect = "info.cern.ch"
+
+[[site]]
+id = "neverssl"
+category = "static"
+url = "http://neverssl.com/"
+expect = "NeverSSL"
+
+[[site]]
+id = "httpbin"
+category = "static"
+url = "https://httpbin.org/"
+expect = "httpbin"
+
+[[site]]
+id = "rust-book"
+category = "docs"
+url = "https://doc.rust-lang.org/book/"
+expect = "Rust Programming Language"
+
+[[site]]
+id = "mdn"
+category = "docs"
+url = "https://developer.mozilla.org/en-US/"
+expect = "MDN"
+
+[[site]]
+id = "python-docs"
+category = "docs"
+url = "https://docs.python.org/3/"
+expect = "Documentation"
+
+[[site]]
+id = "docs-rs"
+category = "docs"
+url = "https://docs.rs/"
+expect = "Docs.rs"
+
+[[site]]
+id = "kernel-org"
+category = "docs"
+url = "https://www.kernel.org/"
+expect = "Linux Kernel"
+
+[[site]]
+id = "arch"
+category = "docs"
+url = "https://archlinux.org/"
+expect = "Arch Linux"
+
+[[site]]
+id = "wikipedia-en"
+category = "wiki"
+url = "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+expect = "Rust"
+
+[[site]]
+id = "wikipedia-ru"
+category = "wiki"
+url = "https://ru.wikipedia.org/wiki/Rust"
+expect = "Rust"
+
+[[site]]
+id = "wikipedia-main"
+category = "wiki"
+url = "https://www.wikipedia.org/"
+expect = "Wikipedia"
+
+[[site]]
+id = "hn"
+category = "news"
+url = "https://news.ycombinator.com/"
+expect = "Hacker News"
+
+[[site]]
+id = "lobsters"
+category = "news"
+url = "https://lobste.rs/"
+expect = "Lobsters"
+
+[[site]]
+id = "bbc"
+category = "news"
+url = "https://www.bbc.com/news"
+expect = "BBC"
+
+[[site]]
+id = "guardian"
+category = "news"
+url = "https://www.theguardian.com/international"
+expect = "Guardian"
+
+[[site]]
+id = "nytimes"
+category = "news"
+url = "https://www.nytimes.com/"
+expect = "New York Times"
+
+[[site]]
+id = "habr"
+category = "news"
+url = "https://habr.com/ru/"
+expect = "Хабр"
+
+[[site]]
+id = "duckduckgo"
+category = "search"
+url = "https://duckduckgo.com/"
+expect = "DuckDuckGo"
+
+[[site]]
+id = "ddg-query"
+category = "search"
+url = "https://duckduckgo.com/?q=servo+browser"
+expect = "servo"
+
+[[site]]
+id = "bing"
+category = "search"
+url = "https://www.bing.com/"
+expect = "Bing"
+
+[[site]]
+id = "google"
+category = "search"
+url = "https://www.google.com/"
+expect = "Google"
+
+[[site]]
+id = "yandex"
+category = "search"
+url = "https://yandex.ru/"
+expect = "Яндекс"
+
+[[site]]
+id = "github"
+category = "dev"
+url = "https://github.com/"
+expect = "GitHub"
+
+[[site]]
+id = "github-repo"
+category = "dev"
+url = "https://github.com/servo/servo"
+expect = "servo"
+
+[[site]]
+id = "gitlab"
+category = "dev"
+url = "https://gitlab.com/"
+expect = "GitLab"
+
+[[site]]
+id = "crates-io"
+category = "dev"
+url = "https://crates.io/"
+expect = "crates.io"
+
+[[site]]
+id = "pypi"
+category = "dev"
+url = "https://pypi.org/"
+expect = "PyPI"
+
+[[site]]
+id = "npm"
+category = "dev"
+url = "https://www.npmjs.com/"
+expect = "npm"
+
+[[site]]
+id = "stackoverflow"
+category = "dev"
+url = "https://stackoverflow.com/questions"
+expect = "Stack Overflow"
+
+[[site]]
+id = "react"
+category = "spa"
+url = "https://react.dev/"
+expect = "React"
+
+[[site]]
+id = "vue"
+category = "spa"
+url = "https://vuejs.org/"
+expect = "Vue"
+
+[[site]]
+id = "svelte"
+category = "spa"
+url = "https://svelte.dev/"
+expect = "Svelte"
+
+[[site]]
+id = "angular"
+category = "spa"
+url = "https://angular.dev/"
+expect = "Angular"
+
+[[site]]
+id = "nextjs"
+category = "spa"
+url = "https://nextjs.org/"
+expect = "Next.js"
+
+[[site]]
+id = "tailwind"
+category = "spa"
+url = "https://tailwindcss.com/"
+expect = "Tailwind"
+
+[[site]]
+id = "vercel"
+category = "spa"
+url = "https://vercel.com/"
+expect = "Vercel"
+
+[[site]]
+id = "discord"
+category = "spa"
+url = "https://discord.com/"
+expect = "Discord"
+
+[[site]]
+id = "ebay"
+category = "shop"
+url = "https://www.ebay.com/"
+expect = "eBay"
+
+[[site]]
+id = "etsy"
+category = "shop"
+url = "https://www.etsy.com/"
+expect = "Etsy"
+
+[[site]]
+id = "amazon"
+category = "shop"
+url = "https://www.amazon.com/"
+expect = "Amazon"
+
+[[site]]
+id = "youtube"
+category = "media"
+url = "https://www.youtube.com/"
+expect = "YouTube"
+
+[[site]]
+id = "vimeo"
+category = "media"
+url = "https://vimeo.com/"
+expect = "Vimeo"
+
+[[site]]
+id = "twitch"
+category = "media"
+url = "https://www.twitch.tv/"
+expect = "Twitch"
+
+[[site]]
+id = "mdn-video"
+category = "media"
+url = "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/video"
+expect = "video"
+
+[[site]]
+id = "osm"
+category = "maps"
+url = "https://www.openstreetmap.org/"
+expect = "OpenStreetMap"
+
+[[site]]
+id = "threejs"
+category = "graphics"
+url = "https://threejs.org/examples/"
+expect = "three.js"
+
+[[site]]
+id = "webgl-samples"
+category = "graphics"
+url = "https://webglsamples.org/"
+expect = "WebGL"
+
+[[site]]
+id = "servo-tunnel"
+category = "graphics"
+url = "https://demo.servo.org/experiments/twgl-tunnel/"
+
+[[site]]
+id = "html5test"
+category = "graphics"
+url = "https://html5test.co/"
+expect = "HTML5"
+
+[[site]]
+id = "apple"
+category = "corp"
+url = "https://www.apple.com/"
+expect = "Apple"
+
+[[site]]
+id = "microsoft"
+category = "corp"
+url = "https://www.microsoft.com/"
+expect = "Microsoft"
+
+[[site]]
+id = "mozilla"
+category = "corp"
+url = "https://www.mozilla.org/"
+expect = "Mozilla"
+
+[[site]]
+id = "cloudflare"
+category = "corp"
+url = "https://www.cloudflare.com/"
+expect = "Cloudflare"
+
+[[site]]
+id = "ubuntu"
+category = "corp"
+url = "https://ubuntu.com/"
+expect = "Ubuntu"
+
+[[site]]
+id = "rust-lang"
+category = "corp"
+url = "https://www.rust-lang.org/"
+expect = "Rust"

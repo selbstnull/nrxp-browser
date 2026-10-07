@@ -81,3 +81,7 @@ Ubuntu 24.04, 16 ядер, 38 ГиБ ОЗУ, 207 ГиБ свободно, DISPLA
 * Встраивание: headless-снимок требует, чтобы встраиватель вызывал `WebView::paint()` по `notify_new_frame_ready`
   (автомат скриншота в `servo-paint/screenshot.rs` иначе не завершается); `SoftwareRenderingContext::new(PhysicalSize)` работает без дисплея;
   `dpi` — отдельная зависимость (Servo её не реэкспортирует); `rustls` провайдер обязателен (`aws_lc_rs`).
+
+## Находки корпуса (I3, 2026-10-07, Servo 0.7.0 debug)
+См. ITERATIONS.md → I3 «Итог». Кратко: ~89% сайтов что-то рисуют; полностью «готовыми» по критерию Servo — 70%; JS-тяжёлые SPA и антибот — основная зона проблем;
+`nytimes.com` — переполнение стека `StyleThread` (проверить на release).

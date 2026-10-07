@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 use nrb_engine::{EngineError, Frame, Size, Snapshot, SnapshotRequest, Snapshotter};
 use servo::{
-    ConsoleLogLevel, EventLoopWaker, LoadStatus, Preferences, RenderingContext, Servo,
-    ServoBuilder, ServoDelegate, SoftwareRenderingContext, WebView, WebViewBuilder,
-    WebViewDelegate,
+    ConsoleLogLevel, DeviceIntRect, DeviceIntSize, EventLoopWaker, LoadStatus, Preferences,
+    RenderingContext, Servo, ServoBuilder, ServoDelegate, SoftwareRenderingContext, WebView,
+    WebViewBuilder, WebViewDelegate,
 };
 
 /// Настройки движка, не зависящие от конкретной страницы.
@@ -174,9 +174,6 @@ impl Snapshotter for ServoSnapshotter {
         let completed = self.pump(Some(&webview), deadline, || {
             state.status.get() == Some(LoadStatus::Complete)
         })?;
-        if !completed {
-            return Err(EngineError::Timeout(req.timeout));
-        }
         let load_time = started.elapsed();
 
         // Страницы, дорисовывающиеся скриптами: даём движку поработать ещё `settle`.
@@ -184,25 +181,46 @@ impl Snapshotter for ServoSnapshotter {
             self.pump(Some(&webview), Instant::now() + req.settle, || false)?;
         }
 
-        let sink = self.state.clone();
-        webview.take_screenshot(None, move |result| {
-            *sink.screenshot.borrow_mut() = Some(result.map_err(|e| format!("{e:?}")));
-        });
-        let state = self.state.clone();
-        let shot_deadline = Instant::now() + req.timeout.min(Duration::from_secs(15));
-        if !self.pump(Some(&webview), shot_deadline, || {
-            state.screenshot.borrow().is_some()
-        })? {
-            return Err(EngineError::Timeout(req.timeout));
+        // Штатный скриншот ждёт «полной готовности» (все картинки, шрифты, отсутствие блокирующих
+        // ресурсов). У живых сайтов с фоновыми запросами или упавшим скриптом она не наступает —
+        // тогда берём то, что уже нарисовано, и помечаем снимок как неполный.
+        let mut partial = !completed;
+        let mut image = None;
+        if completed {
+            let sink = self.state.clone();
+            webview.take_screenshot(None, move |result| {
+                *sink.screenshot.borrow_mut() = Some(result.map_err(|e| format!("{e:?}")));
+            });
+            let state = self.state.clone();
+            let shot_deadline = Instant::now() + req.timeout.min(Duration::from_secs(15));
+            if self.pump(Some(&webview), shot_deadline, || {
+                state.screenshot.borrow().is_some()
+            })? {
+                image = self
+                    .state
+                    .screenshot
+                    .borrow_mut()
+                    .take()
+                    .expect("checked above")
+                    .ok();
+            }
         }
-        let image = self
-            .state
-            .screenshot
-            .borrow_mut()
-            .take()
-            .expect("checked above")
-            .map_err(EngineError::Other)?;
+        let image = match image {
+            Some(image) => image,
+            None => {
+                partial = true;
+                webview.paint();
+                context
+                    .read_to_image(DeviceIntRect::from_size(DeviceIntSize::new(
+                        width as i32,
+                        height as i32,
+                    )))
+                    .ok_or_else(|| EngineError::Other("не удалось прочитать кадр".into()))?
+            }
+        };
 
+        let title = webview.page_title().filter(|t| !t.is_empty());
+        let final_url = webview.url();
         let (w, h) = image.dimensions();
         let frame = Frame {
             size: Size {
@@ -216,6 +234,9 @@ impl Snapshotter for ServoSnapshotter {
             frame,
             load_time,
             console: self.state.console.borrow().clone(),
+            partial,
+            title,
+            final_url,
         })
     }
 }
