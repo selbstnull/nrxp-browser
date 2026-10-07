@@ -1,0 +1,5 @@
+<!doctype html><meta charset=utf-8><title>input test</title>
+<body style="font:24px sans-serif"><p>Поле ввода:</p>
+<input id=a style="font-size:28px;width:600px" autofocus>
+<p id=out></p>
+<script>a.addEventListener('input',()=>{document.title='val='+a.value; out.textContent=a.value})</script>

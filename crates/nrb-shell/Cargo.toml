@@ -1,0 +1,21 @@
+[package]
+name = "nrb-shell"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Оболочка браузера: окно, вкладки, адресная строка (winit + egui поверх Servo)"
+
+[dependencies]
+nrb-engine = { path = "../nrb-engine" }
+nrb-engine-servo = { path = "../nrb-engine-servo" }
+anyhow.workspace = true
+tracing.workspace = true
+url.workspace = true
+dpi = "0.1"
+winit = "0.30"
+egui = "0.36"
+egui-winit = { version = "0.36", default-features = false, features = ["clipboard", "links", "wayland", "x11"] }
+egui_glow = "0.36"
+keyboard-types = "0.8"
+euclid = "0.22"

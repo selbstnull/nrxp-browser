@@ -1,6 +1,8 @@
 //! Абстракция движка. Всё, что не является движком (оболочка, сеть, узлы), зависит только от этого крейта,
 //! поэтому собирается быстро и не тянет Servo.
 
+pub mod omnibox;
+
 use std::time::Duration;
 use url::Url;
 
@@ -59,7 +61,9 @@ impl Frame {
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header().map_err(std::io::Error::other)?;
-        writer.write_image_data(&self.rgba).map_err(std::io::Error::other)
+        writer
+            .write_image_data(&self.rgba)
+            .map_err(std::io::Error::other)
     }
 }
 
@@ -105,18 +109,36 @@ mod tests {
 
     #[test]
     fn size_parses() {
-        assert_eq!("1280x800".parse::<Size>().unwrap(), Size { width: 1280, height: 800 });
+        assert_eq!(
+            "1280x800".parse::<Size>().unwrap(),
+            Size {
+                width: 1280,
+                height: 800
+            }
+        );
         assert!("0x10".parse::<Size>().is_err());
         assert!("abc".parse::<Size>().is_err());
     }
 
     #[test]
     fn blank_frame_is_detected() {
-        let frame = Frame { size: Size { width: 2, height: 2 }, rgba: vec![255; 16] };
+        let frame = Frame {
+            size: Size {
+                width: 2,
+                height: 2,
+            },
+            rgba: vec![255; 16],
+        };
         assert!(frame.dominant_color_ratio() > 0.999);
         let mut rgba = vec![255; 16];
         rgba[0] = 0;
-        let frame = Frame { size: Size { width: 2, height: 2 }, rgba };
+        let frame = Frame {
+            size: Size {
+                width: 2,
+                height: 2,
+            },
+            rgba,
+        };
         assert!(frame.dominant_color_ratio() < 0.8);
     }
 }

@@ -25,6 +25,25 @@ pub struct ServoConfig {
     pub user_agent: Option<String>,
 }
 
+pub use servo;
+
+/// Настройки Servo из нашей конфигурации (общие для headless-снимков и оболочки).
+pub fn build_preferences(config: &ServoConfig) -> Preferences {
+    let mut prefs = Preferences {
+        // Самодостаточность: корни webpki зашиты в бинарь, системное хранилище не используется.
+        network_use_webpki_roots: true,
+        ..Preferences::default()
+    };
+    if let Some(proxy) = &config.proxy {
+        prefs.network_http_proxy_uri = proxy.clone();
+        prefs.network_https_proxy_uri = proxy.clone();
+    }
+    if let Some(ua) = &config.user_agent {
+        prefs.user_agent = ua.clone();
+    }
+    prefs
+}
+
 /// Установить крипто-провайдер rustls. Servo требует, чтобы процесс сделал это до первой загрузки.
 /// Идемпотентно.
 pub fn install_crypto_provider() {
@@ -61,7 +80,10 @@ struct ConsoleDelegate(Rc<PageState>);
 
 impl ServoDelegate for ConsoleDelegate {
     fn show_console_message(&self, level: ConsoleLogLevel, message: String) {
-        self.0.console.borrow_mut().push(format!("[{level:?}] {message}"));
+        self.0
+            .console
+            .borrow_mut()
+            .push(format!("[{level:?}] {message}"));
     }
 }
 
@@ -87,19 +109,8 @@ impl ServoSnapshotter {
     pub fn new(config: &ServoConfig) -> anyhow::Result<Self> {
         install_crypto_provider();
 
-        let mut prefs = Preferences::default();
-        // Самодостаточность: корни webpki зашиты в бинарь, системное хранилище не используется.
-        prefs.network_use_webpki_roots = true;
-        if let Some(proxy) = &config.proxy {
-            prefs.network_http_proxy_uri = proxy.clone();
-            prefs.network_https_proxy_uri = proxy.clone();
-        }
-        if let Some(ua) = &config.user_agent {
-            prefs.user_agent = ua.clone();
-        }
-
         let servo = ServoBuilder::default()
-            .preferences(prefs)
+            .preferences(build_preferences(config))
             .event_loop_waker(Box::new(PollWaker(Arc::new(AtomicBool::new(false)))))
             .build();
         let state = Rc::new(PageState::default());
@@ -116,10 +127,10 @@ impl ServoSnapshotter {
     ) -> Result<bool, EngineError> {
         loop {
             self.servo.spin_event_loop();
-            if self.state.need_paint.replace(false) {
-                if let Some(webview) = webview {
-                    webview.paint();
-                }
+            if self.state.need_paint.replace(false)
+                && let Some(webview) = webview
+            {
+                webview.paint();
             }
             if let Some(reason) = self.state.crashed.borrow().clone() {
                 return Err(EngineError::Crashed(reason));
@@ -160,7 +171,9 @@ impl Snapshotter for ServoSnapshotter {
             .build();
 
         let state = self.state.clone();
-        let completed = self.pump(Some(&webview), deadline, || state.status.get() == Some(LoadStatus::Complete))?;
+        let completed = self.pump(Some(&webview), deadline, || {
+            state.status.get() == Some(LoadStatus::Complete)
+        })?;
         if !completed {
             return Err(EngineError::Timeout(req.timeout));
         }
@@ -177,7 +190,9 @@ impl Snapshotter for ServoSnapshotter {
         });
         let state = self.state.clone();
         let shot_deadline = Instant::now() + req.timeout.min(Duration::from_secs(15));
-        if !self.pump(Some(&webview), shot_deadline, || state.screenshot.borrow().is_some())? {
+        if !self.pump(Some(&webview), shot_deadline, || {
+            state.screenshot.borrow().is_some()
+        })? {
             return Err(EngineError::Timeout(req.timeout));
         }
         let image = self
@@ -189,8 +204,18 @@ impl Snapshotter for ServoSnapshotter {
             .map_err(EngineError::Other)?;
 
         let (w, h) = image.dimensions();
-        let frame = Frame { size: Size { width: w, height: h }, rgba: image.into_raw() };
+        let frame = Frame {
+            size: Size {
+                width: w,
+                height: h,
+            },
+            rgba: image.into_raw(),
+        };
         drop(webview);
-        Ok(Snapshot { frame, load_time, console: self.state.console.borrow().clone() })
+        Ok(Snapshot {
+            frame,
+            load_time,
+            console: self.state.console.borrow().clone(),
+        })
     }
 }

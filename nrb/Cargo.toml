@@ -9,13 +9,14 @@ description = "netrunner-browser: браузер + узел NRXP"
 [features]
 default = []
 # Движок Servo (тяжёлая сборка). Без неё бинарь собирается за секунды — для узла/тестов.
-servo = ["dep:nrb-engine-servo"]
+servo = ["dep:nrb-engine-servo", "dep:nrb-shell"]
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 nrb-engine = { path = "../crates/nrb-engine" }
 nrb-engine-servo = { path = "../crates/nrb-engine-servo", optional = true }
+nrb-shell = { path = "../crates/nrb-shell", optional = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true

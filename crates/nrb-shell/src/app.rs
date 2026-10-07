@@ -1,0 +1,777 @@
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::Arc;
+
+use dpi::PhysicalSize;
+use nrb_engine::omnibox;
+use nrb_engine_servo::servo::{
+    CreateNewWebViewRequest, Cursor, DevicePoint, EventLoopWaker, InputEvent,
+    KeyboardEvent as ServoKeyboardEvent, LoadStatus, MouseButton, MouseButtonAction,
+    MouseButtonEvent, MouseMoveEvent, OffscreenRenderingContext, RenderingContext, Servo,
+    ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint, WheelDelta, WheelEvent,
+    WheelMode, WindowRenderingContext,
+};
+use nrb_engine_servo::{ServoConfig, build_preferences, install_crypto_provider};
+use url::Url;
+use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalPosition;
+use winit::event::{ElementState, MouseButton as WMouseButton, MouseScrollDelta, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::keyboard::{Key as WKey, ModifiersState, NamedKey as WNamedKey};
+use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use winit::window::{CursorIcon, Window, WindowId};
+
+use crate::keys;
+use crate::ui::{self, Action, TabInfo, ToolbarState};
+
+/// Настройки оболочки.
+#[derive(Debug, Clone)]
+pub struct ShellConfig {
+    pub initial_urls: Vec<Url>,
+    pub servo: ServoConfig,
+    pub search: String,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            initial_urls: Vec::new(),
+            servo: ServoConfig::default(),
+            search: omnibox::DEFAULT_SEARCH.into(),
+        }
+    }
+}
+
+pub fn run(config: ShellConfig) -> anyhow::Result<()> {
+    install_crypto_provider();
+    let event_loop = EventLoop::<WakerEvent>::with_user_event().build()?;
+    let mut app = App::Initial {
+        proxy: event_loop.create_proxy(),
+        config: Some(config),
+    };
+    event_loop.run_app(&mut app)?;
+    Ok(())
+}
+
+#[derive(Debug)]
+struct WakerEvent;
+
+#[derive(Clone)]
+struct Waker(EventLoopProxy<WakerEvent>);
+
+impl EventLoopWaker for Waker {
+    fn clone_box(&self) -> Box<dyn EventLoopWaker> {
+        Box::new(self.clone())
+    }
+
+    fn wake(&self) {
+        let _ = self.0.send_event(WakerEvent);
+    }
+}
+
+/// То, что делегат Servo кладёт для оболочки (Servo зовёт делегата из нашего же потока во время `spin_event_loop`).
+struct Shared {
+    window: RefCell<Option<Rc<Window>>>,
+    content: RefCell<Option<Rc<OffscreenRenderingContext>>>,
+    scale: Cell<f32>,
+    new_tabs: RefCell<Vec<WebView>>,
+    closed: RefCell<Vec<WebView>>,
+}
+
+impl Shared {
+    fn redraw(&self) {
+        if let Some(window) = self.window.borrow().as_ref() {
+            window.request_redraw();
+        }
+    }
+}
+
+struct Delegate(Rc<Shared>);
+
+impl WebViewDelegate for Delegate {
+    fn notify_new_frame_ready(&self, _webview: WebView) {
+        self.0.redraw();
+    }
+
+    fn notify_url_changed(&self, _webview: WebView, _url: Url) {
+        self.0.redraw();
+    }
+
+    fn notify_page_title_changed(&self, _webview: WebView, _title: Option<String>) {
+        self.0.redraw();
+    }
+
+    fn notify_load_status_changed(&self, _webview: WebView, _status: LoadStatus) {
+        self.0.redraw();
+    }
+
+    fn notify_history_changed(&self, _webview: WebView, _entries: Vec<Url>, _current: usize) {
+        self.0.redraw();
+    }
+
+    fn notify_cursor_changed(&self, _webview: WebView, _cursor: Cursor) {
+        self.0.redraw();
+    }
+
+    fn notify_closed(&self, webview: WebView) {
+        self.0.closed.borrow_mut().push(webview);
+        self.0.redraw();
+    }
+
+    fn notify_crashed(&self, webview: WebView, reason: String, _backtrace: Option<String>) {
+        tracing::error!(%reason, "вкладка упала");
+        let page = format!(
+            "data:text/html;charset=utf-8,<h2>Вкладка упала</h2><pre>{}</pre>",
+            reason.replace('<', "&lt;")
+        );
+        if let Ok(url) = Url::parse(&page) {
+            webview.load(url);
+        }
+    }
+
+    fn request_create_new(&self, parent: WebView, request: CreateNewWebViewRequest) {
+        let Some(content) = self.0.content.borrow().clone() else {
+            return;
+        };
+        let webview = request
+            .builder(content)
+            .delegate(parent.delegate())
+            .hidpi_scale_factor(euclid_compat::scale(self.0.scale.get()))
+            .build();
+        self.0.new_tabs.borrow_mut().push(webview);
+        self.0.redraw();
+    }
+}
+
+enum App {
+    Initial {
+        proxy: EventLoopProxy<WakerEvent>,
+        config: Option<ShellConfig>,
+    },
+    Running(Box<Running>),
+}
+
+struct Running {
+    window: Rc<Window>,
+    servo: Servo,
+    window_ctx: Rc<WindowRenderingContext>,
+    content_ctx: Rc<OffscreenRenderingContext>,
+    gl: Arc<egui_glow::glow::Context>,
+    egui_ctx: egui::Context,
+    egui_state: egui_winit::State,
+    painter: egui_glow::Painter,
+    shared: Rc<Shared>,
+    delegate: Rc<Delegate>,
+    tabs: Vec<WebView>,
+    active: usize,
+    toolbar: ToolbarState,
+    toolbar_px: u32,
+    cursor: PhysicalPosition<f64>,
+    modifiers: ModifiersState,
+    search: String,
+    exit: bool,
+}
+
+impl ApplicationHandler<WakerEvent> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let App::Initial { proxy, config } = self else {
+            return;
+        };
+        let config = config.take().unwrap_or_default();
+        match Running::new(event_loop, proxy.clone(), config) {
+            Ok(running) => *self = App::Running(Box::new(running)),
+            Err(error) => {
+                eprintln!("не удалось запустить оболочку: {error:#}");
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: WakerEvent) {
+        if let App::Running(running) = self {
+            running.spin();
+            if running.exit {
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if let App::Running(running) = self {
+            running.on_window_event(event_loop, event);
+            if running.exit {
+                event_loop.exit();
+            }
+        }
+    }
+}
+
+mod euclid_compat {
+    use euclid::Scale;
+
+    pub fn scale<A, B>(factor: f32) -> Scale<f32, A, B> {
+        Scale::new(factor)
+    }
+}
+
+impl Running {
+    fn new(
+        event_loop: &ActiveEventLoop,
+        proxy: EventLoopProxy<WakerEvent>,
+        config: ShellConfig,
+    ) -> anyhow::Result<Self> {
+        let window = Rc::new(
+            event_loop.create_window(
+                Window::default_attributes()
+                    .with_title("nrb")
+                    .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 860.0)),
+            )?,
+        );
+        let display_handle = event_loop.display_handle()?;
+        let window_handle = window.window_handle()?;
+        let size = window.inner_size();
+
+        let window_ctx = Rc::new(
+            WindowRenderingContext::new(display_handle, window_handle, size)
+                .map_err(|e| anyhow::anyhow!("WindowRenderingContext: {e:?}"))?,
+        );
+        window_ctx
+            .make_current()
+            .map_err(|e| anyhow::anyhow!("make_current: {e:?}"))?;
+        let gl = window_ctx.glow_gl_api();
+
+        let egui_ctx = egui::Context::default();
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &*window,
+            Some(window.scale_factor() as f32),
+            None,
+            None,
+        );
+        let painter = egui_glow::Painter::new(gl.clone(), "", None, false)
+            .map_err(|e| anyhow::anyhow!("egui painter: {e}"))?;
+
+        let scale = window.scale_factor() as f32;
+        let toolbar_px = (68.0 * scale).round() as u32;
+        let content_size = PhysicalSize::new(
+            size.width.max(1),
+            size.height.saturating_sub(toolbar_px).max(1),
+        );
+        let content_ctx = Rc::new(window_ctx.offscreen_context(content_size));
+
+        let servo = ServoBuilder::default()
+            .preferences(build_preferences(&config.servo))
+            .event_loop_waker(Box::new(Waker(proxy)))
+            .build();
+
+        let shared = Rc::new(Shared {
+            window: RefCell::new(Some(window.clone())),
+            content: RefCell::new(Some(content_ctx.clone())),
+            scale: Cell::new(scale),
+            new_tabs: RefCell::default(),
+            closed: RefCell::default(),
+        });
+        let delegate = Rc::new(Delegate(shared.clone()));
+
+        let mut running = Self {
+            window,
+            servo,
+            window_ctx,
+            content_ctx,
+            gl,
+            egui_ctx,
+            egui_state,
+            painter,
+            shared,
+            delegate,
+            tabs: Vec::new(),
+            active: 0,
+            toolbar: ToolbarState {
+                url_input: String::new(),
+                focus_url: false,
+                can_back: false,
+                can_forward: false,
+                loading: false,
+            },
+            toolbar_px,
+            cursor: PhysicalPosition::new(0.0, 0.0),
+            modifiers: ModifiersState::empty(),
+            search: config.search,
+            exit: false,
+        };
+
+        if config.initial_urls.is_empty() {
+            running.open_tab(Url::parse("about:blank")?);
+            running.toolbar.focus_url = true;
+        } else {
+            for url in config.initial_urls {
+                running.open_tab(url);
+            }
+            running.select_tab(0);
+        }
+        running.window.request_redraw();
+        Ok(running)
+    }
+
+    fn content_size(&self) -> PhysicalSize<u32> {
+        let size = self.window.inner_size();
+        PhysicalSize::new(
+            size.width.max(1),
+            size.height.saturating_sub(self.toolbar_px).max(1),
+        )
+    }
+
+    fn build_tab(&self, url: Url) -> WebView {
+        WebViewBuilder::new(&self.servo, self.content_ctx.clone())
+            .url(url)
+            .hidpi_scale_factor(euclid_compat::scale(self.shared.scale.get()))
+            .delegate(self.delegate.clone())
+            .build()
+    }
+
+    fn open_tab(&mut self, url: Url) {
+        let webview = self.build_tab(url);
+        self.tabs.push(webview);
+        self.select_tab(self.tabs.len() - 1);
+    }
+
+    fn adopt_tab(&mut self, webview: WebView) {
+        self.tabs.push(webview);
+        self.select_tab(self.tabs.len() - 1);
+    }
+
+    fn select_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        for (i, tab) in self.tabs.iter().enumerate() {
+            if i == index {
+                tab.show();
+                tab.set_focused(true);
+                tab.resize(self.content_size());
+            } else {
+                tab.set_focused(false);
+                tab.hide();
+            }
+        }
+        self.active = index;
+        self.sync_url_bar(true);
+        self.window.request_redraw();
+    }
+
+    fn close_tab(&mut self, index: usize) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        self.tabs.remove(index);
+        if self.tabs.is_empty() {
+            self.exit = true;
+            return;
+        }
+        let next = if index < self.active || self.active >= self.tabs.len() {
+            self.active.saturating_sub(1)
+        } else {
+            self.active
+        };
+        self.select_tab(next.min(self.tabs.len() - 1));
+    }
+
+    fn active_tab(&self) -> Option<&WebView> {
+        self.tabs.get(self.active)
+    }
+
+    fn sync_url_bar(&mut self, force: bool) {
+        let editing = self
+            .egui_ctx
+            .memory(|m| m.has_focus(egui::Id::new("url-bar")));
+        if editing && !force {
+            return;
+        }
+        if let Some(tab) = self.active_tab() {
+            let url = tab.url().map(|u| u.to_string()).unwrap_or_default();
+            self.toolbar.url_input = if url == "about:blank" {
+                String::new()
+            } else {
+                url
+            };
+        }
+    }
+
+    fn spin(&mut self) {
+        self.servo.spin_event_loop();
+        let new_tabs: Vec<WebView> = self.shared.new_tabs.borrow_mut().drain(..).collect();
+        for webview in new_tabs {
+            self.adopt_tab(webview);
+        }
+        let closed: Vec<WebView> = self.shared.closed.borrow_mut().drain(..).collect();
+        for webview in closed {
+            if let Some(index) = self.tabs.iter().position(|tab| tab.id() == webview.id()) {
+                self.close_tab(index);
+            }
+        }
+    }
+
+    fn navigate(&mut self, input: &str) {
+        if let (Some(url), Some(tab)) = (omnibox::resolve(input, &self.search), self.active_tab()) {
+            tab.load(url);
+            tab.set_focused(true);
+        }
+    }
+
+    fn apply(&mut self, action: Action) {
+        match action {
+            Action::Navigate(input) => self.navigate(&input),
+            Action::Back => {
+                if let Some(tab) = self.active_tab() {
+                    tab.go_back(1);
+                }
+            }
+            Action::Forward => {
+                if let Some(tab) = self.active_tab() {
+                    tab.go_forward(1);
+                }
+            }
+            Action::Reload => {
+                if let Some(tab) = self.active_tab() {
+                    tab.reload();
+                }
+            }
+            Action::NewTab => {
+                if let Ok(url) = Url::parse("about:blank") {
+                    self.open_tab(url);
+                    self.toolbar.focus_url = true;
+                }
+            }
+            Action::CloseTab(index) => self.close_tab(index),
+            Action::SelectTab(index) => self.select_tab(index),
+        }
+    }
+
+    /// Горячие клавиши оболочки. `true` — клавиша обработана и дальше не идёт.
+    fn shortcut(&mut self, key: &WKey, state: ElementState) -> bool {
+        if state != ElementState::Pressed {
+            return false;
+        }
+        let ctrl = self.modifiers.control_key();
+        let alt = self.modifiers.alt_key();
+        let shift = self.modifiers.shift_key();
+        let character = match key {
+            WKey::Character(text) => text.to_lowercase(),
+            _ => String::new(),
+        };
+        match key {
+            WKey::Named(WNamedKey::ArrowLeft) if alt => self.apply(Action::Back),
+            WKey::Named(WNamedKey::ArrowRight) if alt => self.apply(Action::Forward),
+            WKey::Named(WNamedKey::F5) => self.apply(Action::Reload),
+            WKey::Named(WNamedKey::F6) => self.toolbar.focus_url = true,
+            WKey::Named(WNamedKey::Tab) if ctrl => {
+                let count = self.tabs.len().max(1);
+                let next = if shift {
+                    (self.active + count - 1) % count
+                } else {
+                    (self.active + 1) % count
+                };
+                self.select_tab(next);
+            }
+            _ if ctrl && character == "t" => self.apply(Action::NewTab),
+            _ if ctrl && character == "w" => self.apply(Action::CloseTab(self.active)),
+            _ if ctrl && character == "l" => self.toolbar.focus_url = true,
+            _ if ctrl && character == "r" => self.apply(Action::Reload),
+            _ => return false,
+        }
+        self.window.request_redraw();
+        true
+    }
+
+    fn over_content(&self) -> bool {
+        self.cursor.y >= f64::from(self.toolbar_px)
+    }
+
+    fn content_point(&self) -> WebViewPoint {
+        WebViewPoint::Device(DevicePoint::new(
+            self.cursor.x as f32,
+            (self.cursor.y - f64::from(self.toolbar_px)) as f32,
+        ))
+    }
+
+    fn on_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        self.spin();
+
+        // Горячие клавиши — до egui, чтобы Ctrl+L/T/W работали и при фокусе в адресной строке.
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &event
+            && self.shortcut(&key_event.logical_key, key_event.state)
+        {
+            return;
+        }
+        let response = self.egui_state.on_window_event(&self.window, &event);
+        if response.repaint {
+            self.window.request_redraw();
+        }
+
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::Resized(size) => {
+                self.window_ctx.resize(size);
+                let content = self.content_size();
+                self.content_ctx.resize(content);
+                for tab in &self.tabs {
+                    tab.resize(content);
+                }
+                self.window.request_redraw();
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.shared.scale.set(scale_factor as f32);
+                self.toolbar_px = (68.0 * scale_factor as f32).round() as u32;
+                for tab in &self.tabs {
+                    tab.set_hidpi_scale_factor(euclid_compat::scale(scale_factor as f32));
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = position;
+                if self.over_content()
+                    && let Some(tab) = self.active_tab()
+                {
+                    tab.notify_input_event(InputEvent::MouseMove(MouseMoveEvent::new(
+                        self.content_point(),
+                    )));
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if self.over_content()
+                    && let Some(tab) = self.active_tab()
+                {
+                    let button = match button {
+                        WMouseButton::Left => MouseButton::Primary,
+                        WMouseButton::Right => MouseButton::Secondary,
+                        WMouseButton::Middle => MouseButton::Auxiliary,
+                        WMouseButton::Back => MouseButton::Back,
+                        WMouseButton::Forward => MouseButton::Forward,
+                        WMouseButton::Other(n) => MouseButton::Other(n),
+                    };
+                    let action = match state {
+                        ElementState::Pressed => MouseButtonAction::Down,
+                        ElementState::Released => MouseButtonAction::Up,
+                    };
+                    tab.set_focused(true);
+                    tab.notify_input_event(InputEvent::MouseButton(MouseButtonEvent::new(
+                        action,
+                        button,
+                        self.content_point(),
+                    )));
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.over_content()
+                    && let Some(tab) = self.active_tab()
+                {
+                    let (x, y, mode) = match delta {
+                        MouseScrollDelta::LineDelta(dx, dy) => (
+                            f64::from(dx) * 76.0,
+                            f64::from(dy) * 76.0,
+                            WheelMode::DeltaLine,
+                        ),
+                        MouseScrollDelta::PixelDelta(delta) => {
+                            (delta.x, delta.y, WheelMode::DeltaPixel)
+                        }
+                    };
+                    tab.notify_input_event(InputEvent::Wheel(WheelEvent::new(
+                        WheelDelta { x, y, z: 0.0, mode },
+                        self.content_point(),
+                    )));
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
+                if !self.egui_ctx.egui_wants_keyboard_input()
+                    && let Some(tab) = self.active_tab()
+                {
+                    tab.notify_input_event(InputEvent::Keyboard(ServoKeyboardEvent::new(
+                        keys::keyboard_event(&key_event, self.modifiers),
+                    )));
+                }
+            }
+            WindowEvent::RedrawRequested => self.redraw(),
+            _ => {}
+        }
+    }
+
+    /// Копирует offscreen-кадр Servo в нижнюю часть окна. Свой блит с явным состоянием GL: готовый
+    /// `render_to_parent_callback` Servo в этой конфигурации ничего не копировал.
+    fn blit_content(&self) {
+        use egui_glow::glow::{self, HasContext as _};
+        let content = self.content_size();
+        let gl = &self.gl;
+        let bound =
+            |gl: &glow::Context| unsafe { gl.get_parameter_i32(glow::FRAMEBUFFER_BINDING) as u32 };
+        let framebuffer = |id: u32| std::num::NonZeroU32::new(id).map(glow::NativeFramebuffer);
+        self.content_ctx.prepare_for_rendering();
+        let src = bound(gl);
+        self.window_ctx.prepare_for_rendering();
+        let dst = bound(gl);
+        unsafe {
+            gl.disable(glow::SCISSOR_TEST);
+            gl.disable(glow::BLEND);
+            gl.color_mask(true, true, true, true);
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, framebuffer(src));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, framebuffer(dst));
+            // Низ окна: GL-координаты считаются снизу, поэтому область страницы — [0, высота_страницы].
+            gl.blit_framebuffer(
+                0,
+                0,
+                content.width as i32,
+                content.height as i32,
+                0,
+                0,
+                content.width as i32,
+                content.height as i32,
+                glow::COLOR_BUFFER_BIT,
+                glow::NEAREST,
+            );
+            gl.bind_framebuffer(glow::FRAMEBUFFER, framebuffer(dst));
+        }
+    }
+
+    fn redraw(&mut self) {
+        use egui_glow::glow::HasContext as _;
+        self.window_ctx.prepare_for_rendering();
+        let size = self.window.inner_size();
+        let scale = self.window.scale_factor() as f32;
+
+        // Состояние тулбара из активной вкладки.
+        self.sync_url_bar(false);
+        let tabs: Vec<TabInfo> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| TabInfo {
+                title: tab
+                    .page_title()
+                    .filter(|t| !t.is_empty())
+                    .or_else(|| {
+                        tab.url().map(|u| {
+                            u.host_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| u.to_string())
+                        })
+                    })
+                    .unwrap_or_else(|| "Новая вкладка".into()),
+                active: index == self.active,
+                loading: tab.load_status() != LoadStatus::Complete,
+            })
+            .collect();
+        if let Some(tab) = self.tabs.get(self.active) {
+            self.toolbar.can_back = tab.can_go_back();
+            self.toolbar.can_forward = tab.can_go_forward();
+            self.toolbar.loading = tab.load_status() != LoadStatus::Complete;
+            let title = tab
+                .page_title()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "nrb".into());
+            self.window.set_title(&format!("{title} — nrb"));
+        }
+
+        unsafe {
+            self.gl.disable(egui_glow::glow::SCISSOR_TEST);
+            self.gl
+                .viewport(0, 0, size.width as i32, size.height as i32);
+            self.gl.clear_color(0.12, 0.12, 0.13, 1.0);
+            self.gl.clear(egui_glow::glow::COLOR_BUFFER_BIT);
+        }
+
+        // Страница: Servo рисует в offscreen, затем блит в нижнюю часть окна; тулбар egui рисуется поверх верхней.
+        if let Some(tab) = self.tabs.get(self.active) {
+            tab.paint();
+            self.blit_content();
+            self.window.set_cursor(cursor_icon(tab.cursor()));
+        }
+
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let mut actions = Vec::new();
+        let mut content_top = 0.0_f32;
+        let toolbar = &mut self.toolbar;
+        let mut output = self.egui_ctx.clone().run_ui(raw_input, |ui| {
+            actions = ui::toolbar(ui, &tabs, toolbar);
+            content_top = ui.available_rect_before_wrap().top();
+        });
+        self.egui_state
+            .handle_platform_output(&self.window, output.platform_output.clone());
+        let primitives = self
+            .egui_ctx
+            .tessellate(output.shapes.clone(), output.pixels_per_point);
+        self.painter.paint_and_update_textures(
+            [size.width, size.height],
+            output.pixels_per_point,
+            &primitives,
+            &mut output.textures_delta,
+        );
+
+        // Фактическая высота тулбара (в пикселях) → размер области страницы.
+        let toolbar_px = (content_top * scale).round().max(1.0) as u32;
+        if toolbar_px != self.toolbar_px {
+            self.toolbar_px = toolbar_px;
+            let content = self.content_size();
+            self.content_ctx.resize(content);
+            for tab in &self.tabs {
+                tab.resize(content);
+            }
+        }
+
+        self.window_ctx.present();
+
+        for action in actions {
+            self.apply(action);
+        }
+        if self.egui_ctx.has_requested_repaint()
+            || self
+                .tabs
+                .get(self.active)
+                .is_some_and(|tab| tab.animating())
+        {
+            self.window.request_redraw();
+        }
+    }
+}
+
+fn cursor_icon(cursor: Cursor) -> CursorIcon {
+    match cursor {
+        Cursor::None | Cursor::Default => CursorIcon::Default,
+        Cursor::Pointer => CursorIcon::Pointer,
+        Cursor::ContextMenu => CursorIcon::ContextMenu,
+        Cursor::Help => CursorIcon::Help,
+        Cursor::Progress => CursorIcon::Progress,
+        Cursor::Wait => CursorIcon::Wait,
+        Cursor::Cell => CursorIcon::Cell,
+        Cursor::Crosshair => CursorIcon::Crosshair,
+        Cursor::Text => CursorIcon::Text,
+        Cursor::VerticalText => CursorIcon::VerticalText,
+        Cursor::Alias => CursorIcon::Alias,
+        Cursor::Copy => CursorIcon::Copy,
+        Cursor::Move => CursorIcon::Move,
+        Cursor::NoDrop => CursorIcon::NoDrop,
+        Cursor::NotAllowed => CursorIcon::NotAllowed,
+        Cursor::Grab => CursorIcon::Grab,
+        Cursor::Grabbing => CursorIcon::Grabbing,
+        Cursor::EResize => CursorIcon::EResize,
+        Cursor::NResize => CursorIcon::NResize,
+        Cursor::NeResize => CursorIcon::NeResize,
+        Cursor::NwResize => CursorIcon::NwResize,
+        Cursor::SResize => CursorIcon::SResize,
+        Cursor::SeResize => CursorIcon::SeResize,
+        Cursor::SwResize => CursorIcon::SwResize,
+        Cursor::WResize => CursorIcon::WResize,
+        Cursor::EwResize => CursorIcon::EwResize,
+        Cursor::NsResize => CursorIcon::NsResize,
+        Cursor::NeswResize => CursorIcon::NeswResize,
+        Cursor::NwseResize => CursorIcon::NwseResize,
+        Cursor::ColResize => CursorIcon::ColResize,
+        Cursor::RowResize => CursorIcon::RowResize,
+        Cursor::AllScroll => CursorIcon::AllScroll,
+        Cursor::ZoomIn => CursorIcon::ZoomIn,
+        Cursor::ZoomOut => CursorIcon::ZoomOut,
+    }
+}

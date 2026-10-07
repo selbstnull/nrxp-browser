@@ -26,7 +26,10 @@ pub fn run(args: Args) -> i32 {
     use nrb_engine::{EngineError, SnapshotRequest, Snapshotter};
     use nrb_engine_servo::{ServoConfig, ServoSnapshotter};
 
-    let mut engine = match ServoSnapshotter::new(&ServoConfig { proxy: args.proxy, user_agent: None }) {
+    let mut engine = match ServoSnapshotter::new(&ServoConfig {
+        proxy: args.proxy,
+        user_agent: None,
+    }) {
         Ok(engine) => engine,
         Err(error) => {
             eprintln!("не удалось запустить движок: {error:#}");

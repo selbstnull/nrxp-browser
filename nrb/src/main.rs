@@ -5,13 +5,24 @@ use clap::{Parser, Subcommand};
 use nrb_engine::Size;
 use url::Url;
 
+mod gui;
 mod snap;
 
 #[derive(Parser)]
-#[command(name = "nrb", version, about = "netrunner-browser")]
+#[command(
+    name = "nrb",
+    version,
+    about = "netrunner-browser",
+    args_conflicts_with_subcommands = true
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+    /// Адреса или поисковые запросы для открытия во вкладках (без подкоманды запускается окно).
+    urls: Vec<String>,
+    /// Прокси для движка (HTTP CONNECT), например http://127.0.0.1:3128.
+    #[arg(long)]
+    proxy: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -46,13 +57,26 @@ fn main() {
         .init();
     let cli = Cli::parse();
     let code = match cli.command {
-        Some(Command::Snap { url, output, size, timeout, settle, proxy }) => {
-            snap::run(snap::Args { url, output, size, timeout, settle, proxy })
-        }
-        Some(Command::Version) | None => {
+        Some(Command::Snap {
+            url,
+            output,
+            size,
+            timeout,
+            settle,
+            proxy,
+        }) => snap::run(snap::Args {
+            url,
+            output,
+            size,
+            timeout,
+            settle,
+            proxy,
+        }),
+        Some(Command::Version) => {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));
             0
         }
+        None => gui::run(cli.urls, cli.proxy),
     };
     std::process::exit(code);
 }

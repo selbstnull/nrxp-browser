@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["nrb", "crates/nrb-engine", "crates/nrb-engine-servo"]
+members = ["nrb", "crates/nrb-engine", "crates/nrb-engine-servo", "crates/nrb-shell"]
 
 [workspace.package]
 edition = "2024"

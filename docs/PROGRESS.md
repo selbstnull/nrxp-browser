@@ -22,3 +22,8 @@
   `nrb snap https://example.org -o out/example.png` → `ok 1280x800 load=221ms dominant=0.964` (exit 0, скриншот проверен глазами: кириллица, арабский, CJK, SVG);
   Wikipedia (Rust) → ok, load=1461ms; Hacker News → ok, load=2721ms; bbc.com/news → exit 2 (таймаут); `http://127.0.0.1:1/` → exit 4 без паники.
   Коммит: см. `git log` (`I1: …`).
+* 2026-10-07 · I2 · оболочка `nrb-shell` (winit 0.30 + egui 0.36 + Servo), омнибокс в `nrb-engine::omnibox` (8 тестов).
+  Доказательство: `scripts/gui-smoke.sh` → «GUI-смоук: всё прошло» ×3 (вложенный Xephyr); скриншоты в `out/gui-smoke/`.
+  **Инцидент:** первый прогон смоука шёл на реальном дисплее; окно nrb не получило фокус, и набранные `xdotool` строки
+  (`news.ycombinator.com`, путь к фикстуре, возможно Ctrl+L/T/W) ушли в окно приложения-чата. Исправлено: смоук работает только во
+  вложенном Xephyr и прерывается, если DISPLAY совпадает с хостовым.
