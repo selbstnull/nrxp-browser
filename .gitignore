@@ -1,0 +1,6 @@
+/target
+*.png
+!docs/**/*.png
+/out
+.nrb-dev/
+*.swp

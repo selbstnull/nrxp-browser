@@ -1,0 +1,18 @@
+[package]
+name = "nrb"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "netrunner-browser: браузер + узел NRXP"
+
+[features]
+default = []
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+nrb-engine = { path = "../crates/nrb-engine" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
