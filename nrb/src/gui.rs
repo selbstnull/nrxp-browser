@@ -58,6 +58,7 @@ pub fn run(
         None
     };
     let proxy = tunnel.as_ref().map(|t| t.proxy_url()).or(proxy);
+    let filters = profile.filters_dir();
     let config = ShellConfig {
         initial_urls,
         servo: ServoConfig {
@@ -67,6 +68,13 @@ pub fn run(
             devtools_port: devtools,
         },
         search: search.to_owned(),
+        adblock: filters.map(|dir| match nrb_adblock::Blocker::from_dir(&dir) {
+            Ok(blocker) => std::sync::Arc::new(blocker),
+            Err(error) => {
+                eprintln!("списки фильтров {}: {error}", dir.display());
+                std::sync::Arc::new(nrb_adblock::Blocker::empty())
+            }
+        }),
         tunnel: tunnel
             .clone()
             .map(|t| t as std::sync::Arc<dyn nrb_shell::TunnelStatus>),

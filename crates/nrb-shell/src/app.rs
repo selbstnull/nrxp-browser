@@ -10,8 +10,9 @@ use nrb_engine_servo::servo::{
     EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent, KeyboardEvent as ServoKeyboardEvent,
     LoadStatus, MouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
     OffscreenRenderingContext, PermissionRequest, PixelFormat, RenderingContext, Servo,
-    ServoBuilder, ServoDelegate, SimpleDialog, WebView, WebViewBuilder, WebViewDelegate, WebViewId,
-    WebViewPoint, WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
+    ServoBuilder, ServoDelegate, SimpleDialog, WebResourceLoad, WebResourceResponse, WebView,
+    WebViewBuilder, WebViewDelegate, WebViewId, WebViewPoint, WheelDelta, WheelEvent, WheelMode,
+    WindowRenderingContext,
 };
 use nrb_engine_servo::{ServoConfig, build_opts, build_preferences, install_crypto_provider};
 use url::Url;
@@ -45,6 +46,8 @@ pub struct ShellConfig {
     pub tunnel: Option<std::sync::Arc<dyn TunnelStatus>>,
     /// Менеджер узлов для окна «Узлы» (Ctrl+Shift+N); без него пункт меню не работает.
     pub nodes: Option<std::sync::Arc<dyn NodeManager>>,
+    /// Блокировщик рекламы; без него (или без правил) запросы не фильтруются.
+    pub adblock: Option<std::sync::Arc<nrb_adblock::Blocker>>,
 }
 
 impl Default for ShellConfig {
@@ -55,6 +58,7 @@ impl Default for ShellConfig {
             search: omnibox::DEFAULT_SEARCH.into(),
             tunnel: None,
             nodes: None,
+            adblock: None,
         }
     }
 }
@@ -102,6 +106,10 @@ struct Shared {
     /// Страницы, дозагрузившиеся до `Complete` (для журнала), и сменившиеся заголовки.
     completed: RefCell<Vec<WebViewId>>,
     titled: RefCell<Vec<WebViewId>>,
+    /// Блокировщик рекламы (если есть списки) и его счётчик; включается настройкой `adblock`.
+    blocker: Option<std::sync::Arc<nrb_adblock::Blocker>>,
+    adblock_on: Cell<bool>,
+    blocked: Cell<u64>,
 }
 
 /// Адрес источника для подписи окон: `https://host`; для страниц без хоста — полный URL.
@@ -144,6 +152,27 @@ impl WebViewDelegate for Delegate {
             self.0.completed.borrow_mut().push(webview.id());
         }
         self.0.redraw();
+    }
+
+    /// Блокировка рекламы и трекеров до сети. Главный документ не трогаем; страница верхнего уровня — источник для `$third-party`.
+    fn load_web_resource(&self, webview: WebView, load: WebResourceLoad) {
+        let Some(blocker) = self.0.blocker.as_ref() else {
+            return;
+        };
+        if !self.0.adblock_on.get() || load.request().is_for_main_frame {
+            return;
+        }
+        let url = load.request().url.clone();
+        let kind = nrb_adblock::ResourceKind::from_destination(&format!(
+            "{:?}",
+            load.request().destination
+        ));
+        let source = webview.url().map(|u| u.to_string()).unwrap_or_default();
+        if blocker.check(url.as_str(), &source, kind) == nrb_adblock::Verdict::Block {
+            self.0.blocked.set(self.0.blocked.get() + 1);
+            load.intercept(WebResourceResponse::new(url)).cancel();
+            self.0.redraw();
+        }
     }
 
     fn notify_history_changed(&self, _webview: WebView, _entries: Vec<Url>, _current: usize) {
@@ -451,6 +480,9 @@ impl Running {
             hidden_controls: RefCell::default(),
             fullscreen: Cell::new(None),
             favicons: RefCell::default(),
+            blocker: config.adblock.filter(|b| b.rule_count() > 0),
+            adblock_on: Cell::new(false),
+            blocked: Cell::new(0),
             completed: RefCell::default(),
             titled: RefCell::default(),
         });
@@ -474,6 +506,7 @@ impl Running {
                 nrb_profile::Settings::default(),
             ),
         };
+        shared.adblock_on.set(settings.adblock);
         egui_ctx.set_visuals(match settings.theme {
             nrb_profile::Theme::Dark => egui::Visuals::dark(),
             nrb_profile::Theme::Light => egui::Visuals::light(),
@@ -499,6 +532,7 @@ impl Running {
                 can_forward: false,
                 loading: false,
                 tunnel: None,
+                blocked: None,
                 bookmarked: false,
                 suggestions: Vec::new(),
                 suggest_open: false,
@@ -768,6 +802,7 @@ impl Running {
 
     fn apply_settings(&mut self) {
         self.search = self.settings.search.clone();
+        self.shared.adblock_on.set(self.settings.adblock);
         self.egui_ctx.set_visuals(match self.settings.theme {
             nrb_profile::Theme::Dark => egui::Visuals::dark(),
             nrb_profile::Theme::Light => egui::Visuals::light(),
@@ -1110,6 +1145,8 @@ impl Running {
         let scale = self.window.scale_factor() as f32;
 
         self.toolbar.tunnel = self.tunnel.as_ref().map(|t| (t.summary(), t.up()));
+        self.toolbar.blocked = (self.shared.blocker.is_some() && self.shared.adblock_on.get())
+            .then(|| self.shared.blocked.get());
         let current_url = self
             .active_tab()
             .and_then(|t| t.url())

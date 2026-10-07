@@ -218,6 +218,7 @@ impl Library {
             });
             changed |= ui.checkbox(&mut settings.restore_session, "Восстанавливать вкладки при запуске").changed();
             changed |= ui.checkbox(&mut settings.record_history, "Вести журнал посещений").changed();
+            changed |= ui.checkbox(&mut settings.adblock, "Блокировать рекламу и трекеры (списки *.txt в каталоге filters/ профиля)").changed();
             ui.separator();
             ui.weak("Настройки сохраняются в settings.toml в каталоге профиля. Поисковая система и тема применяются сразу.");
             if changed {

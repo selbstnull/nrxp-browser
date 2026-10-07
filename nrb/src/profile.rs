@@ -56,3 +56,14 @@ impl ProfileArgs {
         }
     }
 }
+
+impl ProfileArgs {
+    /// Каталог списков фильтров блокировщика: `<профиль>/filters`. В приватном сеансе списки читаются из профиля по
+    /// умолчанию (они не личные данные), но ничего туда не пишется.
+    pub fn filters_dir(&self) -> Option<PathBuf> {
+        self.profile
+            .clone()
+            .or_else(default_dir)
+            .map(|d| d.join("filters"))
+    }
+}

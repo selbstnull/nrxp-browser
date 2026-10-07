@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use nrb_engine::Size;
 use url::Url;
 
+mod adblock;
 mod corpus;
 mod deploy;
 mod fetch;
@@ -150,6 +151,11 @@ enum Command {
         #[arg(long)]
         allow_lan: bool,
     },
+    /// Блокировщик рекламы: скачать списки фильтров, показать состояние.
+    Adblock {
+        #[command(subcommand)]
+        command: adblock::AdblockCommand,
+    },
     /// Версия.
     Version,
 }
@@ -232,6 +238,7 @@ fn main() {
             label,
             allow_lan,
         }) => node::egress(&node, label, allow_lan),
+        Some(Command::Adblock { command }) => adblock::run(command),
         Some(Command::Version) => {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));
             0

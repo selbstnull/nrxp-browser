@@ -27,6 +27,8 @@ pub struct Settings {
     pub restore_session: bool,
     /// Записывать историю посещений.
     pub record_history: bool,
+    /// Блокировать рекламу и трекеры по спискам из каталога `filters/` профиля.
+    pub adblock: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +40,7 @@ impl Default for Settings {
             default_zoom: 1.0,
             restore_session: true,
             record_history: true,
+            adblock: true,
         }
     }
 }

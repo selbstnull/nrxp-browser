@@ -55,3 +55,6 @@
 * 2026-10-08 · I7.1 · окно «Узлы» (`nrb-shell/nodes.rs`, `nrb/gui_nodes.rs`): спаривание, выбор узла + перезапуск, свой узел в процессе браузера, приглашения (в т.ч. для домашнего выхода), отзыв.
   Доказательство: `scripts/gui-nodes.sh` «всё прошло» (A: создать узел → включить приём → приглашение; B: спарить → выбрать → перезапуск → `example.org` через A, бейдж NRXP, соединения на A); gui-smoke/dialogs/profile зелёные; clippy `-D warnings` с `--features nrb/servo` чист.
   Исправлены два бага GUI-обвязки (устаревший `$WID`, `xdotool search` без `--all`). Не сделано: QR.
+* 2026-10-08 · I12 (часть) · блокировщик рекламы: `crates/nrb-adblock` (adblock 0.13), хук `load_web_resource` в оболочке, `nrb adblock update/status`, настройка `adblock`, счётчик в тулбаре.
+  Доказательство: 6 юнит-тестов; `scripts/gui-adblock.sh` «всё прошло»; `gui-adblock-real.sh`: EasyList+EasyPrivacy (136 348 правил) на cnn.com — страница отрисована, заблокировано 23 запроса. Всего `cargo test --workspace`: 99 тестов, 0 упавших; clippy `-D warnings` с `--features nrb/servo` чист.
+  `Cargo.lock`: добавлены только новые крейты (adblock, psl, addr, flatbuffers…) — существующие версии не менялись (+75 строк, без удалений).

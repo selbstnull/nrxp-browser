@@ -1,0 +1,12 @@
+[package]
+name = "nrb-adblock"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Блокировщик рекламы и трекеров: синтаксис Adblock Plus (EasyList и др.) поверх крейта adblock"
+
+[dependencies]
+adblock = { version = "0.13", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
+thiserror.workspace = true
+url.workspace = true
