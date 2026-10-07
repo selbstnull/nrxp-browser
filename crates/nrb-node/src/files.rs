@@ -21,6 +21,14 @@ pub struct NodeFile {
     pub private_key: String,
     /// Строгий режим: отвергать клиентов без аутентифицированного хендшейка (всегда включён для новых узлов).
     pub strict: bool,
+    /// Откуда выходит трафик клиентов узла: `local` (с самого узла), `prefer` (через подключённый
+    /// домашний egress, иначе с узла), `require` (только через egress, без него — отказ).
+    #[serde(default = "default_exit")]
+    pub exit: String,
+}
+
+fn default_exit() -> String {
+    "local".to_owned()
 }
 
 impl std::fmt::Debug for NodeFile {
@@ -33,6 +41,7 @@ impl std::fmt::Debug for NodeFile {
             .field("secret", &"[REDACTED]")
             .field("private_key", &"[REDACTED]")
             .field("strict", &self.strict)
+            .field("exit", &self.exit)
             .finish()
     }
 }
@@ -60,6 +69,7 @@ impl NodeFile {
             secret: random_hex(32),
             private_key: random_hex(32),
             strict: true,
+            exit: default_exit(),
         };
         node.save(dir)?;
         Ok(node)
@@ -76,6 +86,7 @@ impl NodeFile {
         let node: Self =
             toml::from_str(&text).map_err(|e| Error::Format(format!("{}: {e}", path.display())))?;
         node.identity()?; // ключи валидны
+        node.exit_mode()?;
         Ok(node)
     }
 
@@ -83,6 +94,18 @@ impl NodeFile {
         let text = toml::to_string_pretty(self).map_err(|e| Error::Format(e.to_string()))?;
         write_private(&Self::path(dir), &text)?;
         Ok(())
+    }
+
+    pub fn exit_mode(&self) -> Result<netrunner_core::net::ExitMode> {
+        use netrunner_core::net::ExitMode;
+        match self.exit.as_str() {
+            "local" => Ok(ExitMode::Local),
+            "prefer" => Ok(ExitMode::Prefer),
+            "require" => Ok(ExitMode::Require),
+            other => Err(Error::Format(format!(
+                "exit = «{other}»: ожидается local, prefer или require"
+            ))),
+        }
     }
 
     pub fn identity(&self) -> Result<LocalIdentity> {

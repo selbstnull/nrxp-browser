@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{Args, Subcommand};
-use nrb_node::{DeviceStore, Invite, NodeFile, run_ingress};
+use nrb_node::{DeviceStore, Egress, EgressOptions, Invite, NodeFile, Role, run_ingress};
 
 #[derive(Args, Clone, Debug)]
 pub struct DirArg {
@@ -45,6 +45,9 @@ pub enum NodeCommand {
         dir: DirArg,
         /// Имя устройства, например `телефон`.
         name: String,
+        /// Приглашение для домашнего выхода (reverse-egress): токен годится только для `nrb egress`, не как клиентский.
+        #[arg(long)]
+        egress: bool,
     },
     /// Список устройств.
     Devices {
@@ -106,11 +109,14 @@ fn execute(command: NodeCommand) -> Result<(), String> {
             );
             Ok(())
         }
-        NodeCommand::Invite { dir, name } => {
+        NodeCommand::Invite { dir, name, egress } => {
             let dir = dir.resolve()?;
             let node = NodeFile::load(&dir).map_err(|e| e.to_string())?;
             let store = DeviceStore::open(&dir).map_err(|e| e.to_string())?;
-            let (_, token) = store.add_device(&name).map_err(|e| e.to_string())?;
+            let role = if egress { Role::Egress } else { Role::Client };
+            let (_, token) = store
+                .add_device_with_role(&name, role)
+                .map_err(|e| e.to_string())?;
             let invite = Invite {
                 host: node.public_host.clone(),
                 port: node.port,
@@ -124,9 +130,16 @@ fn execute(command: NodeCommand) -> Result<(), String> {
             eprintln!(
                 "\nПриглашение содержит секреты — передавайте по доверенному каналу. Токен показан ОДИН раз (на узле хранится только хеш)."
             );
-            eprintln!(
-                "На новом устройстве: `nrb pair '<ссылка>'` или `nrb --node '<ссылка>' <url>`."
-            );
+            if egress {
+                eprintln!("На домашнем устройстве: `nrb egress '<ссылка>'`.");
+                eprintln!(
+                    "Чтобы клиенты узла выходили через него, в node.toml задайте exit = \"prefer\" или \"require\" и перезапустите узел."
+                );
+            } else {
+                eprintln!(
+                    "На новом устройстве: `nrb pair '<ссылка>'` или `nrb --node '<ссылка>' <url>`."
+                );
+            }
             Ok(())
         }
         NodeCommand::Devices { dir } => {
@@ -137,9 +150,13 @@ fn execute(command: NodeCommand) -> Result<(), String> {
             }
             for device in devices {
                 println!(
-                    "{}  {:<24} {}",
+                    "{}  {:<24} {:<8} {}",
                     device.id,
                     device.name,
+                    match device.role {
+                        Role::Client => "клиент",
+                        Role::Egress => "выход",
+                    },
                     if device.revoked {
                         "ОТОЗВАНО"
                     } else {
@@ -181,6 +198,14 @@ fn run_node(dir: &Path) -> Result<(), String> {
             node.public_key().map_err(|e| e.to_string())?
         );
         println!(
+            "выход клиентов: {} (node.toml: exit)",
+            match node.exit.as_str() {
+                "prefer" => "через домашний egress, если подключён, иначе с узла",
+                "require" => "ТОЛЬКО через домашний egress (без него — отказ)",
+                _ => "с самого узла",
+            }
+        );
+        println!(
             "устройств: {}. Остановка — Ctrl+C.",
             store
                 .list()
@@ -208,6 +233,91 @@ async fn wait_for_shutdown() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
+}
+
+/// `nrb egress <ссылка|конфиг>`: домашний выход. Держит сессию с ingress до Ctrl+C или отзыва токена.
+pub fn egress(node: &str, label: Option<String>, allow_lan: bool) -> i32 {
+    let (config, default_label) = if node.starts_with("nrxp://") {
+        match Invite::parse(node) {
+            Ok(invite) => {
+                let name = invite.name.clone();
+                (invite.to_node_config(), name)
+            }
+            Err(error) => {
+                eprintln!("приглашение: {error}");
+                return 1;
+            }
+        }
+    } else {
+        match nrb_transport::NodeConfig::from_toml_file(Path::new(node)) {
+            Ok(config) => (config, "home".to_owned()),
+            Err(error) => {
+                eprintln!("{node}: {error}");
+                return 1;
+            }
+        }
+    };
+    let options = EgressOptions {
+        label: label.unwrap_or(default_label),
+        allow_private: allow_lan,
+    };
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    runtime.block_on(async {
+        let egress =
+            match Egress::start(&config, &options, std::time::Duration::from_secs(20)).await {
+                Ok(egress) => egress,
+                Err(error) => {
+                    eprintln!("не удалось подключиться к узлу {}: {error}", config.addr);
+                    return 1;
+                }
+            };
+        println!(
+            "выход «{}» подключён к {}. Целей в локальной сети: {}. Остановка — Ctrl+C.",
+            options.label,
+            config.addr,
+            if allow_lan {
+                "РАЗРЕШЕНЫ"
+            } else {
+                "запрещены"
+            }
+        );
+        let mut was_up = true;
+        let shutdown = wait_for_shutdown();
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+            }
+            if egress.rejected() {
+                eprintln!("узел отверг или отозвал токен выхода — завершаюсь");
+                return 1;
+            }
+            let up = egress.up();
+            if up != was_up {
+                println!(
+                    "{}",
+                    if up {
+                        "связь с узлом восстановлена"
+                    } else {
+                        "связи с узлом нет, переподключаюсь…"
+                    }
+                );
+                was_up = up;
+            }
+        }
+        println!("останавливаюсь…");
+        0
+    })
 }
 
 /// `nrb pair <ссылка>`: сохраняет конфиг узла для этого устройства.

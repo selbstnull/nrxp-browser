@@ -22,7 +22,7 @@
 | Профиль: куки/localStorage/IndexedDB, история, закладки, восстановление вкладок, настройки | работает |
 | Собственный узел: `nrb node init/run/invite/devices/revoke`, `nrb pair` (без бэкенда) | работает на loopback (тесты + `scripts/node-e2e.sh`: спаривание, отзыв, decoy, `snap` через свой узел); не проверено на реальном VPS, нет GUI-менеджера и musl-сборки |
 | Деплой узла на VPS по SSH (`nrb deploy`) | работает на тестовом контейнере (systemd + sshd: установка, апгрейд, откат, удаление); **на реальном VPS не проверялось** |
-| Reverse-egress (домашний браузер за NAT как выход) | не начато (спайк по коду: реализуемо) |
+| Reverse-egress (домашний `nrb` за NAT как выход: `nrb egress`, `nrb node invite --egress`, `exit = "require"`) | работает на loopback (3 процесса, `scripts/egress-e2e.sh`, тесты ядра); требует **патч ядра** `patches/proxy/0002` (не запушен, без ревью); не проверено на двух реальных хостах; нет лимитов, выбор выхода — один на узел |
 | HTTP/3 поверх NRXP | не начато; в ядре потолок датаграммы 1150 B < 1200 B у QUIC — нужна правка ядра |
 | Загрузки файлов, поиск по странице, печать, менеджер паролей, MSE-видео, расширения | нет (ограничения Servo 0.7 или не сделано) |
 
@@ -65,6 +65,7 @@ scripts/gui-dialogs.sh
 scripts/gui-profile.sh
 scripts/leakwatch.sh /tmp/stop > leaks.txt &  # наблюдатель за прямыми соединениями процесса nrb
 scripts/node-e2e.sh                           # сквозная проверка своего узла (loopback)
+scripts/egress-e2e.sh                         # reverse-egress: клиент → узел → домашний выход (3 процесса, loopback)
 scripts/deploy-e2e.sh                         # деплой в тестовый контейнер с systemd (нужен docker)
 ```
 

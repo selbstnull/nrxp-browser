@@ -137,6 +137,17 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Стать выходом для чужого узла (reverse-egress): дозвониться до ingress и обслуживать его клиентов. Работает за NAT.
+    Egress {
+        /// Приглашение `nrxp://…` (из `nrb node invite --egress`) или путь к конфигу узла.
+        node: String,
+        /// Подпись в реестре узла (по умолчанию — имя из приглашения).
+        #[arg(long)]
+        label: Option<String>,
+        /// Разрешить цели в локальной сети этого устройства (127.0.0.1, 192.168.*, …). По умолчанию запрещено.
+        #[arg(long)]
+        allow_lan: bool,
+    },
     /// Версия.
     Version,
 }
@@ -214,6 +225,11 @@ fn main() {
         Some(Command::Node { command }) => node::run(command),
         Some(Command::Deploy(args)) => deploy::run(args),
         Some(Command::Pair { link, out }) => node::pair(&link, out),
+        Some(Command::Egress {
+            node,
+            label,
+            allow_lan,
+        }) => node::egress(&node, label, allow_lan),
         Some(Command::Version) => {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));
             0

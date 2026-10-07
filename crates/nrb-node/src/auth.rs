@@ -16,6 +16,17 @@ use sha2::{Digest, Sha256};
 
 use crate::{Error, Result, now_unix, random_hex, write_private};
 
+/// Роль устройства. Клиент ходит через узел; egress — выход для клиентов (домашний `nrb`, который сам дозванивается).
+/// Токен одной роли не годится для другой: иначе любое спаренное устройство могло бы назначить себя выходом
+/// и получать чужой трафик.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    #[default]
+    Client,
+    Egress,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
     /// Короткий идентификатор (hex 8) — он же `user_id` для ядра и ключ учёта трафика.
@@ -25,6 +36,8 @@ pub struct Device {
     pub created: i64,
     #[serde(default)]
     pub revoked: bool,
+    #[serde(default)]
+    pub role: Role,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -114,6 +127,10 @@ impl DeviceStore {
 
     /// Добавляет устройство. Возвращает устройство и **токен — показывается один раз**, в реестре остаётся только хеш.
     pub fn add_device(&self, name: &str) -> Result<(Device, String)> {
+        self.add_device_with_role(name, Role::Client)
+    }
+
+    pub fn add_device_with_role(&self, name: &str, role: Role) -> Result<(Device, String)> {
         self.reload(true)?;
         let name = name.trim();
         if name.is_empty() {
@@ -139,6 +156,7 @@ impl DeviceStore {
             token_sha256: hash_token(&token),
             created: now_unix(),
             revoked: false,
+            role,
         };
         registry.devices.push(device.clone());
         self.persist(&registry)?;
@@ -213,6 +231,27 @@ pub struct LocalAuth {
 }
 
 impl LocalAuth {
+    #[allow(clippy::result_large_err)] // тип ошибки задан трейтом `AuthValidator` ядра
+    fn validate_role(&self, token: &str, role: Role) -> std::result::Result<UserQuota, AppError> {
+        match self.store.find_by_token(token) {
+            Some(device) if device.role == role => Ok(UserQuota {
+                user_id: device.id,
+                limit_bytes: None,
+                used_bytes: 0,
+            }),
+            Some(_) => Err(AppError::new(
+                ERR_AUTH_FAILED,
+                "Устройство не спарено",
+                "Device token has a different role",
+            )),
+            None => Err(AppError::new(
+                ERR_AUTH_FAILED,
+                "Устройство не спарено",
+                "Unknown or revoked device token",
+            )),
+        }
+    }
+
     pub fn new(store: std::sync::Arc<DeviceStore>) -> Self {
         Self {
             store,
@@ -228,18 +267,11 @@ impl LocalAuth {
 #[async_trait]
 impl AuthValidator for LocalAuth {
     async fn validate(&self, token: &str) -> std::result::Result<UserQuota, AppError> {
-        match self.store.find_by_token(token) {
-            Some(device) => Ok(UserQuota {
-                user_id: device.id,
-                limit_bytes: None,
-                used_bytes: 0,
-            }),
-            None => Err(AppError::new(
-                ERR_AUTH_FAILED,
-                "Устройство не спарено",
-                "Unknown or revoked device token",
-            )),
-        }
+        self.validate_role(token, Role::Client)
+    }
+
+    async fn validate_egress(&self, token: &str) -> std::result::Result<UserQuota, AppError> {
+        self.validate_role(token, Role::Egress)
     }
 
     async fn report_usage(
@@ -345,6 +377,23 @@ mod tests {
         let cli = DeviceStore::open(dir.path()).unwrap();
         let (_, token) = cli.add_device("сразу").unwrap();
         assert!(running.find_by_token(&token).is_some());
+    }
+
+    #[tokio::test]
+    async fn roles_are_not_interchangeable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(DeviceStore::open(dir.path()).unwrap());
+        let (_, client) = store.add_device("телефон").unwrap();
+        let (egress_dev, egress) = store.add_device_with_role("дом", Role::Egress).unwrap();
+        assert_eq!(egress_dev.role, Role::Egress);
+        let auth = LocalAuth::new(store);
+        assert!(auth.validate(&client).await.is_ok());
+        assert!(auth.validate_egress(&client).await.is_err());
+        assert!(auth.validate_egress(&egress).await.is_ok());
+        assert!(
+            auth.validate(&egress).await.is_err(),
+            "токен выхода не годится как клиентский"
+        );
     }
 
     #[tokio::test]

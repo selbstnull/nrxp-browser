@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use netrunner_core::Identity;
 use netrunner_core::net::{
-    AuthValidator, Connection, NetworkConfig, ServerHandler, SessionManager, TunnelHandler,
-    run_datagram_listener,
+    AuthValidator, Connection, NetworkConfig, ReverseEgressRegistry, ServerHandler, SessionManager,
+    TunnelHandler, run_datagram_listener,
 };
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
 use tokio::task::JoinHandle;
@@ -28,9 +28,15 @@ pub struct IngressHandle {
     task: JoinHandle<()>,
     sessions: Arc<SessionManager>,
     auth: Arc<LocalAuth>,
+    egress: Arc<ReverseEgressRegistry>,
 }
 
 impl IngressHandle {
+    /// Подписи подключённых домашних egress, способных нести трафик прямо сейчас.
+    pub fn live_egress(&self) -> Vec<String> {
+        self.egress.live()
+    }
+
     /// Сколько клиентских сессий сейчас на узле.
     pub fn active_sessions(&self) -> usize {
         self.sessions.get_session().len()
@@ -88,6 +94,7 @@ pub async fn run_ingress(node: &NodeFile, store: Arc<DeviceStore>) -> Result<Ing
     let auth = Arc::new(LocalAuth::new(store.clone()));
     let validator: Arc<dyn AuthValidator> = auth.clone();
     let token = CancellationToken::new();
+    let egress = ReverseEgressRegistry::new(node.exit_mode()?);
 
     // UDP-нога на том же адресе и порту: опциональна, при неудаче клиенты остаются на TCP (как в netrunner-server).
     match UdpSocket::bind(local_addr).await {
@@ -139,6 +146,7 @@ pub async fn run_ingress(node: &NodeFile, store: Arc<DeviceStore>) -> Result<Ing
         .into();
     let decoy_host: Arc<str> = Arc::from(node.decoy_host.as_str());
     let (accept_sm, accept_token) = (sessions.clone(), token.clone());
+    let egress_registry = egress.clone();
     let task = tokio::spawn(async move {
         let mut next_conn: u64 = 0;
         loop {
@@ -157,7 +165,8 @@ pub async fn run_ingress(node: &NodeFile, store: Arc<DeviceStore>) -> Result<Ing
                         cover_flight.clone(),
                         true,
                     )
-                    .with_mesh_policy(true, false, None);
+                    .with_mesh_policy(true, false, None)
+                    .with_reverse_egress(egress_registry.clone());
                     let span = tracing::info_span!("client_conn", conn = next_conn);
                     tokio::spawn(
                         async move {
@@ -178,5 +187,6 @@ pub async fn run_ingress(node: &NodeFile, store: Arc<DeviceStore>) -> Result<Ing
         task,
         sessions,
         auth,
+        egress,
     })
 }

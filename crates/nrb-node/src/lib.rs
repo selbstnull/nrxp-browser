@@ -7,11 +7,13 @@
 //! * [`run_ingress`] — приём клиентов с decoy-fallback для сканеров.
 
 mod auth;
+mod egress;
 mod files;
 mod ingress;
 mod invite;
 
-pub use auth::{Device, DeviceStore, LocalAuth};
+pub use auth::{Device, DeviceStore, LocalAuth, Role};
+pub use egress::{Egress, EgressOptions};
 pub use files::NodeFile;
 pub use ingress::{IngressHandle, run_ingress};
 pub use invite::Invite;
