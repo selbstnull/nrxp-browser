@@ -85,3 +85,17 @@ Ubuntu 24.04, 16 ядер, 38 ГиБ ОЗУ, 207 ГиБ свободно, DISPLA
 ## Находки корпуса (I3, 2026-10-07, Servo 0.7.0 debug)
 См. ITERATIONS.md → I3 «Итог». Кратко: ~89% сайтов что-то рисуют; полностью «готовыми» по критерию Servo — 70%; JS-тяжёлые SPA и антибот — основная зона проблем;
 `nytimes.com` — переполнение стека `StyleThread` (проверить на release).
+
+### S4 — секрет + strict без бэкенда (2026-10-07) — **да**
+Тест `strict_node_admits_only_clients_with_credentials` (crates/nrb-transport/tests/loopback.rs): узел `PROXY_NRXP_SECRET`+`PROXY_NRXP_PRIVATE_KEY`+`PROXY_NRXP_STRICT=true`, без `--require-auth`/backend.
+Верный клиент → эхо работает; анонимный → не подключился / нет данных; верный публичный ключ + чужой секрет → отвергнут.
+
+### S5 — datagram-нога (2026-10-07) — частично
+`MAX_DATAGRAM_LEG_PAYLOAD = 1150` (core/src/net/constants.rs:52); `select_udp_leg` отдаёт кадр на нативную ногу только если `payload_len <= max_datagram_payload`.
+QUIC-клиент шлёт Initial ≥ 1200 байт → всегда по TCP-ногам. Нужна правка потолка в ядре либо отказ от h3 по UDP-ноге. На живой ноге не мерили.
+
+### Ядро: `Connect` терялся (2026-10-07)
+`Muxer::send_to_network`: `Connect*` не входил в `is_critical` → `control_tx.try_send` → при `Full` кадр молча отбрасывался (WARN раз в секунду). Воспроизводится на 16+ одновременных открытиях.
+Патч в `patches/proxy/0001-fix-muxer-Connect.patch`.
+Попутно: `NetworkConfig::init_global(mtu)` обязателен до первого подключения (паника «Global NetworkConfig is not initialized»); мы зовём его один раз с MTU 1450 (`init_core` в nrb-transport).
+Кредиты: `NrxpStream` обязан отдавать `RawCastFrame::credit` по мере чтения и слать первый грант (`CreditReceiver::initial_offset()`) сразу после `Connect`; отправлять грант надо отдельной задачей (см. итог I4).

@@ -1,0 +1,24 @@
+[package]
+name = "nrb-net"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Сетевой слой браузера: HTTP (h1/h2) поверх любого Transport, TLS с зашитыми корнями"
+
+[dependencies]
+nrb-transport = { path = "../nrb-transport" }
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+thiserror.workspace = true
+tokio = { workspace = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
+tracing.workspace = true
+url.workspace = true
+webpki-roots = "1"
+
+[dev-dependencies]
+tokio = { workspace = true }

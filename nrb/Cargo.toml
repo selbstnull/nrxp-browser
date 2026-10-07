@@ -15,6 +15,9 @@ servo = ["dep:nrb-engine-servo", "dep:nrb-shell"]
 anyhow.workspace = true
 clap.workspace = true
 nrb-engine = { path = "../crates/nrb-engine" }
+nrb-net = { path = "../crates/nrb-net" }
+nrb-transport = { path = "../crates/nrb-transport" }
+tokio.workspace = true
 nrb-engine-servo = { path = "../crates/nrb-engine-servo", optional = true }
 nrb-shell = { path = "../crates/nrb-shell", optional = true }
 tracing.workspace = true

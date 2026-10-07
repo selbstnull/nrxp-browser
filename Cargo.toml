@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["nrb", "crates/nrb-engine", "crates/nrb-engine-servo", "crates/nrb-shell"]
+# Вложенный worktree соседнего netrunner-proxy (scripts/setup-upstream.sh) — не часть нашего воркспейса.
+exclude = [".nrb-dev"]
+members = ["nrb", "crates/nrb-engine", "crates/nrb-engine-servo", "crates/nrb-shell", "crates/nrb-transport", "crates/nrb-net"]
 
 [workspace.package]
 edition = "2024"

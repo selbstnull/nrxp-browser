@@ -6,6 +6,8 @@ use std::time::Duration;
 use nrb_engine::Size;
 use url::Url;
 
+#[cfg_attr(not(feature = "servo"), allow(dead_code))]
+#[cfg_attr(not(feature = "servo"), allow(dead_code))]
 pub struct Args {
     pub url: Url,
     pub output: PathBuf,

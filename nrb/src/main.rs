@@ -6,6 +6,7 @@ use nrb_engine::Size;
 use url::Url;
 
 mod corpus;
+mod fetch;
 mod gui;
 mod snap;
 
@@ -83,6 +84,27 @@ enum Command {
         #[arg(long)]
         no_ratchet: bool,
     },
+    /// Скачать URL (GET, h1/h2) через узел NRXP или напрямую: диагностика транспорта без движка.
+    Fetch {
+        url: Url,
+        /// Конфиг узла (TOML: addr, decoy_sni, nrxp_secret, nrxp_public_key, auth_token).
+        #[arg(long, conflicts_with_all = ["node_addr", "system"])]
+        node: Option<PathBuf>,
+        /// Анонимный узел `host:port` (только для локальной разработки).
+        #[arg(long, conflicts_with = "system")]
+        node_addr: Option<String>,
+        /// Обычные сокеты ОС вместо NRXP (DNS и трафик мимо туннеля — только для сравнения).
+        #[arg(long)]
+        system: bool,
+        /// Куда записать тело; по умолчанию — stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Печатать статус и заголовки в stderr.
+        #[arg(short = 'i', long)]
+        include: bool,
+        #[arg(long, default_value = "60s", value_parser = humantime::parse_duration)]
+        timeout: Duration,
+    },
     /// Версия.
     Version,
 }
@@ -133,6 +155,23 @@ fn main() {
             timeout,
             proxy,
             no_ratchet,
+        }),
+        Some(Command::Fetch {
+            url,
+            node,
+            node_addr,
+            system,
+            output,
+            include,
+            timeout,
+        }) => fetch::run(fetch::Args {
+            url,
+            node,
+            node_addr,
+            system,
+            output,
+            include,
+            timeout,
         }),
         Some(Command::Version) => {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));
