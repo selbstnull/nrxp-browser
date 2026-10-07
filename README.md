@@ -20,7 +20,7 @@
 | Весь трафик движка через NRXP без TUN/root (локальный HTTP-CONNECT прокси + `NrxpTransport`) | работает на dev-узле; утечек в обход туннеля при проверенных сценариях не найдено (WebSocket в Servo обходил прокси — исправлено патчем Servo) |
 | Диалоги страницы, `<select>`, контекстное меню, HTTP-авторизация, русские страницы ошибок | работает (GUI-сценарии в Xephyr) |
 | Профиль: куки/localStorage/IndexedDB, история, закладки, восстановление вкладок, настройки | работает |
-| Собственный узел: `nrb node init/run/invite/devices/revoke`, `nrb pair` (без бэкенда) | работает на loopback (тесты + `scripts/node-e2e.sh`: спаривание, отзыв, decoy, `snap` через свой узел); не проверено на реальном VPS, нет GUI-менеджера и musl-сборки |
+| Собственный узел: `nrb node init/run/invite/devices/revoke`, `nrb pair` (без бэкенда), окно «Узлы» в браузере (Ctrl+Shift+N: спаривание, выбор узла, свой узел, приглашения) | работает на loopback (тесты + `scripts/node-e2e.sh`, `scripts/gui-nodes.sh`: спаривание, отзыв, decoy, `snap` через свой узел); не проверено на реальном VPS; нет QR-кода |
 | Деплой узла на VPS по SSH (`nrb deploy`) | работает на тестовом контейнере (systemd + sshd: установка, апгрейд, откат, удаление); **на реальном VPS не проверялось** |
 | Reverse-egress (домашний `nrb` за NAT как выход: `nrb egress`, `nrb node invite --egress`, `exit = "require"`) | работает на loopback (3 процесса, `scripts/egress-e2e.sh`, тесты ядра); требует **патч ядра** `patches/proxy/0002` (не запушен, без ревью); не проверено на двух реальных хостах; нет лимитов, выбор выхода — один на узел |
 | HTTP/3 поверх NRXP | не начато; в ядре потолок датаграммы 1150 B < 1200 B у QUIC — нужна правка ядра |
@@ -65,6 +65,7 @@ scripts/gui-dialogs.sh
 scripts/gui-profile.sh
 scripts/leakwatch.sh /tmp/stop > leaks.txt &  # наблюдатель за прямыми соединениями процесса nrb
 scripts/node-e2e.sh                           # сквозная проверка своего узла (loopback)
+scripts/gui-nodes.sh                          # окно «Узлы»: два экземпляра браузера, спаривание и перезапуск через узел
 scripts/egress-e2e.sh                         # reverse-egress: клиент → узел → домашний выход (3 процесса, loopback)
 scripts/deploy-e2e.sh                         # деплой в тестовый контейнер с systemd (нужен docker)
 ```

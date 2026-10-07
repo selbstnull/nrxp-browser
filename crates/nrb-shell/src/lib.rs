@@ -7,6 +7,8 @@ mod app;
 mod keys;
 mod library;
 mod modal;
+mod nodes;
 mod ui;
 
 pub use app::{ShellConfig, TunnelStatus, run};
+pub use nodes::{DeviceRow, NodeManager, OwnNode, PairedNode};

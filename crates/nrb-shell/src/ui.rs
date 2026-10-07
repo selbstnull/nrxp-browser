@@ -39,6 +39,7 @@ pub enum Action {
     OpenHistory,
     OpenBookmarks,
     OpenSettings,
+    OpenNodes,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -203,6 +204,10 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
                     }
                     if ui.button("Настройки         Ctrl+,").clicked() {
                         actions.push(Action::OpenSettings);
+                        ui.close();
+                    }
+                    if ui.button("Узлы              Ctrl+Shift+N").clicked() {
+                        actions.push(Action::OpenNodes);
                         ui.close();
                     }
                     ui.separator();

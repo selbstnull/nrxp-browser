@@ -111,22 +111,7 @@ fn execute(command: NodeCommand) -> Result<(), String> {
         }
         NodeCommand::Invite { dir, name, egress } => {
             let dir = dir.resolve()?;
-            let node = NodeFile::load(&dir).map_err(|e| e.to_string())?;
-            let store = DeviceStore::open(&dir).map_err(|e| e.to_string())?;
-            let role = if egress { Role::Egress } else { Role::Client };
-            let (_, token) = store
-                .add_device_with_role(&name, role)
-                .map_err(|e| e.to_string())?;
-            let invite = Invite {
-                host: node.public_host.clone(),
-                port: node.port,
-                public_key: node.public_key().map_err(|e| e.to_string())?,
-                secret: node.secret.clone(),
-                token,
-                decoy_sni: node.decoy_host.clone(),
-                name,
-            };
-            println!("{}", invite.to_url());
+            println!("{}", make_invite(&dir, &name, egress)?);
             eprintln!(
                 "\nПриглашение содержит секреты — передавайте по доверенному каналу. Токен показан ОДИН раз (на узле хранится только хеш)."
             );
@@ -176,6 +161,26 @@ fn execute(command: NodeCommand) -> Result<(), String> {
         }
         NodeCommand::Run { dir } => run_node(&dir.resolve()?),
     }
+}
+
+/// Новое устройство в реестре узла и ссылка-приглашение для него (токен — один раз).
+pub fn make_invite(dir: &Path, name: &str, egress: bool) -> Result<String, String> {
+    let node = NodeFile::load(dir).map_err(|e| e.to_string())?;
+    let store = DeviceStore::open(dir).map_err(|e| e.to_string())?;
+    let role = if egress { Role::Egress } else { Role::Client };
+    let (_, token) = store
+        .add_device_with_role(name, role)
+        .map_err(|e| e.to_string())?;
+    let invite = Invite {
+        host: node.public_host.clone(),
+        port: node.port,
+        public_key: node.public_key().map_err(|e| e.to_string())?,
+        secret: node.secret.clone(),
+        token,
+        decoy_sni: node.decoy_host.clone(),
+        name: name.to_owned(),
+    };
+    Ok(invite.to_url())
 }
 
 fn run_node(dir: &Path) -> Result<(), String> {
@@ -322,33 +327,13 @@ pub fn egress(node: &str, label: Option<String>, allow_lan: bool) -> i32 {
 
 /// `nrb pair <ссылка>`: сохраняет конфиг узла для этого устройства.
 pub fn pair(link: &str, out: Option<PathBuf>) -> i32 {
-    let invite = match Invite::parse(link) {
-        Ok(invite) => invite,
+    let (path, invite) = match pair_to_file(link, out) {
+        Ok(done) => done,
         Err(error) => {
             eprintln!("{error}");
             return 1;
         }
     };
-    let path = out.or_else(|| {
-        default_data_dir().map(|d| {
-            d.join("nodes")
-                .join(format!("{}.toml", sanitize(&invite.name)))
-        })
-    });
-    let Some(path) = path else {
-        eprintln!("не удалось определить, куда сохранить конфиг: задайте --out");
-        return 1;
-    };
-    if let Some(parent) = path.parent()
-        && let Err(error) = std::fs::create_dir_all(parent)
-    {
-        eprintln!("{}: {error}", parent.display());
-        return 1;
-    }
-    if let Err(error) = write_private(&path, &invite.to_config_toml()) {
-        eprintln!("{}: {error}", path.display());
-        return 1;
-    }
     println!(
         "спарено с {}:{} как «{}»",
         invite.host, invite.port, invite.name
@@ -356,6 +341,59 @@ pub fn pair(link: &str, out: Option<PathBuf>) -> i32 {
     println!("конфиг (с секретами, права 0600): {}", path.display());
     println!("Использование: nrb --node {} <адрес>", path.display());
     0
+}
+
+/// Разбирает приглашение и сохраняет конфиг узла (0600). Ошибки не содержат ссылку: в ней секреты.
+pub fn pair_to_file(link: &str, out: Option<PathBuf>) -> Result<(PathBuf, Invite), String> {
+    let invite = Invite::parse(link).map_err(|e| e.to_string())?;
+    let path = out
+        .or_else(|| nodes_dir().map(|d| d.join(format!("{}.toml", sanitize(&invite.name)))))
+        .ok_or("не удалось определить, куда сохранить конфиг: задайте --out")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    write_private(&path, &invite.to_config_toml())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok((path, invite))
+}
+
+/// Каталог конфигов спаренных узлов.
+pub fn nodes_dir() -> Option<PathBuf> {
+    default_data_dir().map(|d| d.join("nodes"))
+}
+
+/// Файл с выбором узла для туннеля (имя конфига без `.toml`); нет файла — напрямую.
+fn selection_file() -> Option<PathBuf> {
+    default_data_dir().map(|d| d.join("selected-node"))
+}
+
+/// Конфиг выбранного в окне «Узлы» узла, если он есть и ещё существует.
+pub fn selected_config() -> Option<PathBuf> {
+    let name = std::fs::read_to_string(selection_file()?).ok()?;
+    let name = name.trim();
+    if name.is_empty() || name != sanitize(name) {
+        return None;
+    }
+    let path = nodes_dir()?.join(format!("{name}.toml"));
+    path.is_file().then_some(path)
+}
+
+pub fn write_selection(name: Option<&str>) -> std::io::Result<()> {
+    let Some(path) = selection_file() else {
+        return Err(std::io::Error::other("нет каталога данных"));
+    };
+    match name {
+        Some(name) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, sanitize(name))
+        }
+        None => match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        },
+    }
 }
 
 fn sanitize(name: &str) -> String {

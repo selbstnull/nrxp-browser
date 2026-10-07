@@ -23,9 +23,10 @@ gui_init() {
 # gui_launch <nrb> [аргументы…] — запускает окно и ждёт его появления; после — $WID.
 gui_launch() {
   local nrb="$1"; shift
+  unset WID   # иначе при втором запуске в одном сценарии цикл ниже сразу принял бы окно предыдущего экземпляра
   "$nrb" "$@" > "$OUT/nrb.log" 2>&1 &
   PID=$!
-  for _ in $(seq 1 40); do WID=$(xdotool search --pid "$PID" --name "nrb" 2>/dev/null | tail -1); [ -n "${WID:-}" ] && break; sleep 0.5; done
+  for _ in $(seq 1 40); do WID=$(xdotool search --all --pid "$PID" --name "nrb" 2>/dev/null | tail -1); [ -n "${WID:-}" ] && break; sleep 0.5; done
   [ -n "${WID:-}" ] || { echo "FAIL окно не появилось"; exit 1; }
   # Без оконного менеджера фокус следует за указателем — ставим его в окно.
   xdotool windowfocus "$WID"

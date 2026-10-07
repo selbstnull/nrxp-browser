@@ -26,6 +26,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 use crate::keys;
 use crate::library::{Library, LibraryAction, Panel};
 use crate::modal::{self, Modal};
+use crate::nodes::{NodeManager, NodesWindow};
 use crate::ui::{self, Action, TabInfo, ToolbarState};
 
 /// Состояние туннеля для индикатора в тулбаре. Реализует вызывающий код (`nrb`), оболочка о NRXP ничего не знает.
@@ -42,6 +43,8 @@ pub struct ShellConfig {
     pub servo: ServoConfig,
     pub search: String,
     pub tunnel: Option<std::sync::Arc<dyn TunnelStatus>>,
+    /// Менеджер узлов для окна «Узлы» (Ctrl+Shift+N); без него пункт меню не работает.
+    pub nodes: Option<std::sync::Arc<dyn NodeManager>>,
 }
 
 impl Default for ShellConfig {
@@ -51,6 +54,7 @@ impl Default for ShellConfig {
             servo: ServoConfig::default(),
             search: omnibox::DEFAULT_SEARCH.into(),
             tunnel: None,
+            nodes: None,
         }
     }
 }
@@ -305,6 +309,8 @@ struct Running {
     search: String,
     exit: bool,
     tunnel: Option<std::sync::Arc<dyn TunnelStatus>>,
+    nodes: Option<std::sync::Arc<dyn NodeManager>>,
+    nodes_window: NodesWindow,
     next_badge_refresh: std::time::Instant,
     /// Очередь модальных запросов Servo; рисуется первое, остальные ждут.
     modals: std::collections::VecDeque<(Option<EmbedderControlId>, Modal)>,
@@ -512,6 +518,8 @@ impl Running {
             settings,
             profile_dir,
             library: Library::default(),
+            nodes: config.nodes,
+            nodes_window: NodesWindow::default(),
             saved_session: (
                 nrb_profile::SessionState::default(),
                 std::time::Instant::now(),
@@ -862,6 +870,7 @@ impl Running {
             Action::OpenHistory => self.library.toggle(Panel::History),
             Action::OpenBookmarks => self.library.toggle(Panel::Bookmarks),
             Action::OpenSettings => self.library.toggle(Panel::Settings),
+            Action::OpenNodes => self.nodes_window.toggle(),
             Action::ZoomIn => self.zoom(|z| z * 1.1),
             Action::ZoomOut => self.zoom(|z| z / 1.1),
             Action::ZoomReset => {
@@ -908,6 +917,7 @@ impl Running {
             _ if ctrl && character == "h" => self.apply(Action::OpenHistory),
             _ if ctrl && shift && character == "o" => self.apply(Action::OpenBookmarks),
             _ if ctrl && character == "," => self.apply(Action::OpenSettings),
+            _ if ctrl && shift && character == "n" => self.apply(Action::OpenNodes),
             _ if ctrl && (character == "=" || character == "+") => self.apply(Action::ZoomIn),
             _ if ctrl && (character == "-" || character == "_") => self.apply(Action::ZoomOut),
             _ if ctrl && character == "0" => self.apply(Action::ZoomReset),
@@ -1172,12 +1182,17 @@ impl Running {
         let fullscreen = self.fullscreen;
         let mut modal_done = false;
         let mut library_actions = Vec::new();
+        let mut nodes_restart = false;
         let mut output = self.egui_ctx.clone().run_ui(raw_input, |ui| {
             if !fullscreen {
                 actions = ui::toolbar(ui, &tabs, toolbar);
                 content_top = ui.available_rect_before_wrap().top();
             }
             library_actions = self.library.show(ui.ctx(), &self.store, &mut self.settings);
+            if let Some(manager) = self.nodes.clone() {
+                let summary = self.tunnel.as_ref().map(|t| t.summary());
+                nodes_restart = self.nodes_window.show(ui.ctx(), manager.as_ref(), summary);
+            }
             if let Some((_, modal)) = self.modals.front_mut() {
                 modal_done = modal::show(ui.ctx(), modal);
             }
@@ -1187,6 +1202,11 @@ impl Running {
                 LibraryAction::Open(url) => self.navigate(&url),
                 LibraryAction::SettingsChanged => self.apply_settings(),
             }
+        }
+        if nodes_restart && let Some(manager) = self.nodes.clone() {
+            self.save_session(true);
+            manager.request_restart();
+            self.exit = true;
         }
         if modal_done {
             self.modals.pop_front();

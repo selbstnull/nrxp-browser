@@ -9,6 +9,8 @@ mod corpus;
 mod deploy;
 mod fetch;
 mod gui;
+#[cfg(feature = "servo")]
+mod gui_nodes;
 mod node;
 mod profile;
 mod snap;
