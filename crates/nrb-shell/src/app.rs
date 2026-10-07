@@ -5,11 +5,12 @@ use std::sync::Arc;
 use dpi::PhysicalSize;
 use nrb_engine::omnibox;
 use nrb_engine_servo::servo::{
-    CreateNewWebViewRequest, Cursor, DevicePoint, EventLoopWaker, InputEvent,
-    KeyboardEvent as ServoKeyboardEvent, LoadStatus, MouseButton, MouseButtonAction,
-    MouseButtonEvent, MouseMoveEvent, OffscreenRenderingContext, RenderingContext, Servo,
-    ServoBuilder, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint, WheelDelta, WheelEvent,
-    WheelMode, WindowRenderingContext,
+    AuthenticationRequest, CompositionEvent, CompositionState, CreateNewWebViewRequest, Cursor,
+    DeviceIntRect, DevicePoint, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent,
+    InputEvent, KeyboardEvent as ServoKeyboardEvent, LoadStatus, MouseButton, MouseButtonAction,
+    MouseButtonEvent, MouseMoveEvent, OffscreenRenderingContext, PermissionRequest, PixelFormat,
+    RenderingContext, Servo, ServoBuilder, SimpleDialog, WebView, WebViewBuilder, WebViewDelegate,
+    WebViewId, WebViewPoint, WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
 };
 use nrb_engine_servo::{ServoConfig, build_preferences, install_crypto_provider};
 use url::Url;
@@ -22,6 +23,7 @@ use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::keys;
+use crate::modal::{self, Modal};
 use crate::ui::{self, Action, TabInfo, ToolbarState};
 
 /// Состояние туннеля для индикатора в тулбаре. Реализует вызывающий код (`nrb`), оболочка о NRXP ничего не знает.
@@ -83,8 +85,25 @@ struct Shared {
     window: RefCell<Option<Rc<Window>>>,
     content: RefCell<Option<Rc<OffscreenRenderingContext>>>,
     scale: Cell<f32>,
+    toolbar_px: Cell<u32>,
     new_tabs: RefCell<Vec<WebView>>,
     closed: RefCell<Vec<WebView>>,
+    /// Новые модальные запросы от Servo (id элемента управления нужен, чтобы убрать окно по `hide_embedder_control`).
+    modals: RefCell<Vec<(Option<EmbedderControlId>, Modal)>>,
+    hidden_controls: RefCell<Vec<EmbedderControlId>>,
+    fullscreen: Cell<Option<bool>>,
+    favicons: RefCell<Vec<WebViewId>>,
+}
+
+/// Адрес источника для подписи окон: `https://host`; для страниц без хоста — полный URL.
+fn origin_of(webview: &WebView) -> String {
+    match webview.url() {
+        Some(url) => match url.host_str() {
+            Some(host) => format!("{}://{host}", url.scheme()),
+            None => url.to_string(),
+        },
+        None => "(неизвестная страница)".into(),
+    }
 }
 
 impl Shared {
@@ -119,6 +138,89 @@ impl WebViewDelegate for Delegate {
     }
 
     fn notify_cursor_changed(&self, _webview: WebView, _cursor: Cursor) {
+        self.0.redraw();
+    }
+
+    fn notify_favicon_changed(&self, webview: WebView) {
+        self.0.favicons.borrow_mut().push(webview.id());
+        self.0.redraw();
+    }
+
+    fn notify_fullscreen_state_changed(&self, _webview: WebView, fullscreen: bool) {
+        self.0.fullscreen.set(Some(fullscreen));
+        self.0.redraw();
+    }
+
+    fn request_permission(&self, webview: WebView, request: PermissionRequest) {
+        let origin = origin_of(&webview);
+        let feature = request.feature();
+        self.0.modals.borrow_mut().push((
+            None,
+            Modal::Permission {
+                origin,
+                feature,
+                request: Some(request),
+            },
+        ));
+        self.0.redraw();
+    }
+
+    fn request_authentication(&self, webview: WebView, request: AuthenticationRequest) {
+        let _ = &webview;
+        let (url, for_proxy) = (request.url().to_string(), request.for_proxy());
+        self.0.modals.borrow_mut().push((
+            None,
+            Modal::Auth {
+                url,
+                for_proxy,
+                request: Some(request),
+                user: String::new(),
+                pass: String::new(),
+            },
+        ));
+        self.0.redraw();
+    }
+
+    fn show_embedder_control(&self, webview: WebView, control: EmbedderControl) {
+        let id = control.id();
+        let scale = self.0.scale.get().max(0.5);
+        let toolbar = self.0.toolbar_px.get() as f32;
+        let at = |rect: DeviceIntRect| {
+            egui::pos2(
+                rect.min.x as f32 / scale,
+                (rect.max.y as f32 + toolbar) / scale,
+            )
+        };
+        let modal = match control {
+            EmbedderControl::SimpleDialog(dialog) => {
+                let input = match &dialog {
+                    SimpleDialog::Prompt(prompt) => prompt.current_value().to_owned(),
+                    _ => String::new(),
+                };
+                Modal::Dialog {
+                    origin: origin_of(&webview),
+                    dialog: Some(dialog),
+                    input,
+                }
+            }
+            EmbedderControl::SelectElement(element) => Modal::Select {
+                anchor: at(element.position()),
+                selected: element.selected_options(),
+                element: Some(element),
+            },
+            EmbedderControl::ContextMenu(menu) => Modal::Context {
+                anchor: at(menu.position()),
+                menu: Some(menu),
+            },
+            // Выбор файла/цвета и ввод через IME-панель пока не поддерживаются: запрос отменяется при drop.
+            _ => return,
+        };
+        self.0.modals.borrow_mut().push((Some(id), modal));
+        self.0.redraw();
+    }
+
+    fn hide_embedder_control(&self, _webview: WebView, id: EmbedderControlId) {
+        self.0.hidden_controls.borrow_mut().push(id);
         self.0.redraw();
     }
 
@@ -181,6 +283,11 @@ struct Running {
     exit: bool,
     tunnel: Option<std::sync::Arc<dyn TunnelStatus>>,
     next_badge_refresh: std::time::Instant,
+    /// Очередь модальных запросов Servo; рисуется первое, остальные ждут.
+    modals: std::collections::VecDeque<(Option<EmbedderControlId>, Modal)>,
+    /// Окно в полноэкранном режиме (F11 или запрос страницы): тулбар скрыт.
+    fullscreen: bool,
+    favicons: std::collections::HashMap<WebViewId, egui::TextureHandle>,
 }
 
 impl ApplicationHandler<WakerEvent> for App {
@@ -296,8 +403,13 @@ impl Running {
             window: RefCell::new(Some(window.clone())),
             content: RefCell::new(Some(content_ctx.clone())),
             scale: Cell::new(scale),
+            toolbar_px: Cell::new(toolbar_px),
             new_tabs: RefCell::default(),
             closed: RefCell::default(),
+            modals: RefCell::default(),
+            hidden_controls: RefCell::default(),
+            fullscreen: Cell::new(None),
+            favicons: RefCell::default(),
         });
         let delegate = Rc::new(Delegate(shared.clone()));
 
@@ -329,7 +441,11 @@ impl Running {
             exit: false,
             tunnel: config.tunnel,
             next_badge_refresh: std::time::Instant::now(),
+            modals: Default::default(),
+            fullscreen: false,
+            favicons: Default::default(),
         };
+        running.window.set_ime_allowed(true);
 
         if config.initial_urls.is_empty() {
             running.open_tab(Url::parse("about:blank")?);
@@ -434,12 +550,62 @@ impl Running {
         for webview in new_tabs {
             self.adopt_tab(webview);
         }
+        let incoming: Vec<_> = self.shared.modals.borrow_mut().drain(..).collect();
+        self.modals.extend(incoming);
+        let hidden: Vec<EmbedderControlId> =
+            self.shared.hidden_controls.borrow_mut().drain(..).collect();
+        for id in hidden {
+            self.modals.retain(|(modal_id, _)| *modal_id != Some(id));
+        }
+        if let Some(fullscreen) = self.shared.fullscreen.take() {
+            self.set_fullscreen(fullscreen);
+        }
+        let favicons: Vec<WebViewId> = self.shared.favicons.borrow_mut().drain(..).collect();
+        for id in favicons {
+            self.update_favicon(id);
+        }
         let closed: Vec<WebView> = self.shared.closed.borrow_mut().drain(..).collect();
         for webview in closed {
             if let Some(index) = self.tabs.iter().position(|tab| tab.id() == webview.id()) {
                 self.close_tab(index);
             }
         }
+    }
+
+    fn set_fullscreen(&mut self, fullscreen: bool) {
+        self.fullscreen = fullscreen;
+        self.window
+            .set_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)));
+        self.window.request_redraw();
+    }
+
+    fn update_favicon(&mut self, id: WebViewId) {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id() == id) else {
+            return;
+        };
+        let Some(image) = tab.favicon() else { return };
+        let (width, height) = (image.width as usize, image.height as usize);
+        let data = image.data();
+        let color = match image.format {
+            PixelFormat::RGBA8 if data.len() >= width * height * 4 => {
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [width, height],
+                    &data[..width * height * 4],
+                )
+            }
+            PixelFormat::RGB8 if data.len() >= width * height * 3 => {
+                egui::ColorImage::from_rgb([width, height], &data[..width * height * 3])
+            }
+            _ => return,
+        };
+        drop(image);
+        let texture = self.egui_ctx.load_texture(
+            format!("favicon-{id:?}"),
+            color,
+            egui::TextureOptions::LINEAR,
+        );
+        self.favicons.insert(id, texture);
+        self.window.request_redraw();
     }
 
     fn navigate(&mut self, input: &str) {
@@ -480,7 +646,7 @@ impl Running {
 
     /// Горячие клавиши оболочки. `true` — клавиша обработана и дальше не идёт.
     fn shortcut(&mut self, key: &WKey, state: ElementState) -> bool {
-        if state != ElementState::Pressed {
+        if state != ElementState::Pressed || !self.modals.is_empty() {
             return false;
         }
         let ctrl = self.modifiers.control_key();
@@ -494,6 +660,13 @@ impl Running {
             WKey::Named(WNamedKey::ArrowLeft) if alt => self.apply(Action::Back),
             WKey::Named(WNamedKey::ArrowRight) if alt => self.apply(Action::Forward),
             WKey::Named(WNamedKey::F5) => self.apply(Action::Reload),
+            WKey::Named(WNamedKey::F11) => self.set_fullscreen(!self.fullscreen),
+            WKey::Named(WNamedKey::Escape) if self.fullscreen && self.modals.is_empty() => {
+                if let Some(tab) = self.active_tab() {
+                    tab.exit_fullscreen();
+                }
+                self.set_fullscreen(false);
+            }
             WKey::Named(WNamedKey::F6) => self.toolbar.focus_url = true,
             WKey::Named(WNamedKey::Tab) if ctrl => {
                 let count = self.tabs.len().max(1);
@@ -514,8 +687,9 @@ impl Running {
         true
     }
 
+    /// Курсор над страницей и под ним нет модального окна (пока окно открыто, страница ввода не получает).
     fn over_content(&self) -> bool {
-        self.cursor.y >= f64::from(self.toolbar_px)
+        self.modals.is_empty() && self.cursor.y >= f64::from(self.toolbar_px)
     }
 
     fn content_point(&self) -> WebViewPoint {
@@ -617,11 +791,25 @@ impl Running {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                if !self.egui_ctx.egui_wants_keyboard_input()
+                if self.modals.is_empty()
+                    && !self.egui_ctx.egui_wants_keyboard_input()
                     && let Some(tab) = self.active_tab()
                 {
                     tab.notify_input_event(InputEvent::Keyboard(ServoKeyboardEvent::new(
                         keys::keyboard_event(&key_event, self.modifiers),
+                    )));
+                }
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                if self.modals.is_empty()
+                    && !self.egui_ctx.egui_wants_keyboard_input()
+                    && let Some(tab) = self.active_tab()
+                {
+                    tab.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+                        CompositionEvent {
+                            state: CompositionState::End,
+                            data: text,
+                        },
                     )));
                 }
             }
@@ -681,6 +869,7 @@ impl Running {
             .iter()
             .enumerate()
             .map(|(index, tab)| TabInfo {
+                icon: self.favicons.get(&tab.id()).map(|t| t.id()),
                 title: tab
                     .page_title()
                     .filter(|t| !t.is_empty())
@@ -693,7 +882,7 @@ impl Running {
                     })
                     .unwrap_or_else(|| "Новая вкладка".into()),
                 active: index == self.active,
-                loading: tab.load_status() != LoadStatus::Complete,
+                loading: index == self.active && tab.load_status() != LoadStatus::Complete,
             })
             .collect();
         if let Some(tab) = self.tabs.get(self.active) {
@@ -726,10 +915,21 @@ impl Running {
         let mut actions = Vec::new();
         let mut content_top = 0.0_f32;
         let toolbar = &mut self.toolbar;
+        let fullscreen = self.fullscreen;
+        let mut modal_done = false;
         let mut output = self.egui_ctx.clone().run_ui(raw_input, |ui| {
-            actions = ui::toolbar(ui, &tabs, toolbar);
-            content_top = ui.available_rect_before_wrap().top();
+            if !fullscreen {
+                actions = ui::toolbar(ui, &tabs, toolbar);
+                content_top = ui.available_rect_before_wrap().top();
+            }
+            if let Some((_, modal)) = self.modals.front_mut() {
+                modal_done = modal::show(ui.ctx(), modal);
+            }
         });
+        if modal_done {
+            self.modals.pop_front();
+            self.window.request_redraw();
+        }
         self.egui_state
             .handle_platform_output(&self.window, output.platform_output.clone());
         let primitives = self
@@ -743,9 +943,14 @@ impl Running {
         );
 
         // Фактическая высота тулбара (в пикселях) → размер области страницы.
-        let toolbar_px = (content_top * scale).round().max(1.0) as u32;
+        let toolbar_px = if self.fullscreen {
+            0
+        } else {
+            (content_top * scale).round().max(1.0) as u32
+        };
         if toolbar_px != self.toolbar_px {
             self.toolbar_px = toolbar_px;
+            self.shared.toolbar_px.set(toolbar_px);
             let content = self.content_size();
             self.content_ctx.resize(content);
             for tab in &self.tabs {

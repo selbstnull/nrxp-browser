@@ -5,6 +5,7 @@
 
 mod app;
 mod keys;
+mod modal;
 mod ui;
 
 pub use app::{ShellConfig, TunnelStatus, run};

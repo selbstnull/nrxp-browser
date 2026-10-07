@@ -39,3 +39,5 @@
 * 2026-10-07 · I5 · `nrb-net::proxy` (CONNECT, loopback, пароль на запуск, запрет private), `tunnel` в nrb, индикатор. Корпус через туннель 38/49 ok (98% открылось); `leakwatch` — внешних сокетов 0.
   **Утечка WebSocket** найдена наблюдателем и закрыта патчем Servo. Реконнект: восстановление ~1 с, потоки закрываются при потере всех ног.
 * 2026-10-07 · I5.s · S3 = да (по коду): reverse-egress не требует смены протокола; план правок ядра записан. Прототип запуском — I9.0.
+* 2026-10-07 · I2.1 · модальные окна (`nrb-shell/modal.rs`), фавиконки, IME, fullscreen, русские страницы ошибок (`nrb-engine-servo/resources`, свой ResourceReader).
+  Доказательство: `scripts/gui-dialogs.sh` → «всё прошло» (alert/confirm/prompt/select/HTTP-auth), `gui-smoke.sh` → «всё прошло»; скриншоты ошибок в `out/err-*.png`.

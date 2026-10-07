@@ -1,6 +1,7 @@
 //! Тулбар: полоса вкладок и навигационная строка. Только рисует и возвращает действия — состояния браузера не меняет.
 
 pub struct TabInfo {
+    pub icon: Option<egui::TextureId>,
     pub title: String,
     pub active: bool,
     pub loading: bool,
@@ -43,6 +44,9 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             for (index, tab) in tabs.iter().enumerate() {
+                if let Some(icon) = tab.icon {
+                    ui.image((icon, egui::vec2(14.0, 14.0)));
+                }
                 let label = format!(
                     "{}{}",
                     if tab.loading { "⟳ " } else { "" },

@@ -4,3 +4,4 @@
 /out
 .nrb-dev/
 *.swp
+/target-release

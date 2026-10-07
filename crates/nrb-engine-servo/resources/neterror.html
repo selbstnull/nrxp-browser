@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Не удалось открыть страницу</title>
+<style>
+  body { font: 16px/1.5 sans-serif; background: #f4f4f6; color: #222; margin: 0; }
+  main { max-width: 640px; margin: 12vh auto; padding: 0 24px; }
+  h1 { font-size: 26px; margin: 0 0 8px; }
+  .card { background: #fff; border-radius: 10px; padding: 24px 28px; box-shadow: 0 1px 6px #0002; }
+  code { background: #eee; padding: 2px 6px; border-radius: 4px; word-break: break-word; }
+  ul { padding-left: 20px; color: #444; }
+  button { font-size: 16px; padding: 8px 18px; border-radius: 6px; border: 1px solid #888; background: #fafafa; cursor: pointer; }
+</style>
+</head>
+<body>
+<main><div class="card">
+  <h1>Не удалось открыть страницу</h1>
+  <p>Браузер не смог загрузить запрошенный адрес.</p>
+  <p>Причина: <code>${reason}</code></p>
+  <ul>
+    <li>Проверьте адрес на опечатки.</li>
+    <li>Проверьте подключение к сети и к узлу туннеля.</li>
+    <li>Сайт может быть временно недоступен.</li>
+  </ul>
+  <button onclick="location.reload()">Повторить</button>
+</div></main>
+</body>
+</html>

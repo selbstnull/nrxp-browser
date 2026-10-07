@@ -27,6 +27,9 @@ pub struct ServoConfig {
 
 pub use servo;
 
+mod resources;
+pub use resources::ERROR_PAGE_TITLES;
+
 /// Настройки Servo из нашей конфигурации (общие для headless-снимков и оболочки).
 pub fn build_preferences(config: &ServoConfig) -> Preferences {
     let mut prefs = Preferences {

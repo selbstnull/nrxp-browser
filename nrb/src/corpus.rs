@@ -126,10 +126,7 @@ fn classify(
             let engine_error_page =
                 report.final_url.as_deref().is_some_and(|u| {
                     u.starts_with("about:neterror") || u.starts_with("about:error")
-                }) || report
-                    .title
-                    .as_deref()
-                    .is_some_and(|t| t.to_lowercase().contains("error loading page"));
+                }) || report.title.as_deref().is_some_and(is_error_page_title);
             if engine_error_page {
                 Status::NetError
             } else if report.blank {
@@ -158,6 +155,20 @@ fn classify(
 /// «Сайт открывается»: страница что-то нарисовала и это не страница ошибки.
 fn opens(status: Status) -> bool {
     matches!(status, Status::Ok | Status::Partial | Status::SignatureMiss)
+}
+
+/// Заголовки страниц ошибок: наши (русские, `nrb-engine-servo/resources`) и стандартная английская Servo.
+fn is_error_page_title(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    lower.contains("error loading page")
+        || lower.contains("certificate error")
+        || [
+            "не удалось открыть страницу",
+            "ошибка сертификата",
+            "вкладка завершилась аварийно",
+        ]
+        .iter()
+        .any(|known| lower.contains(known))
 }
 
 fn percent(passed: usize, total: usize) -> f64 {
@@ -527,6 +538,13 @@ mod tests {
         );
         let err = report(true, Some("Error loading page"), None);
         assert_eq!(classify(Some(4), Some(&err), None, false), Status::NetError);
+        let ru = report(false, Some("Не удалось открыть страницу"), None);
+        assert_eq!(classify(Some(0), Some(&ru), None, false), Status::NetError);
+        let cert = report(false, Some("Ошибка сертификата"), None);
+        assert_eq!(
+            classify(Some(0), Some(&cert), Some("example"), false),
+            Status::NetError
+        );
         assert!(
             opens(Status::Partial)
                 && opens(Status::Ok)

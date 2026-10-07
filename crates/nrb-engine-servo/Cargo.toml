@@ -9,7 +9,7 @@ description = "Реализация nrb-engine на Servo"
 [dependencies]
 nrb-engine = { path = "../nrb-engine" }
 # Версия зафиксирована: API встраивания меняется каждый месяц.
-servo = { version = "=0.7.0", default-features = false, features = ["bundled", "js_jit", "webcrypto", "webgl"] }
+servo = { version = "=0.7.0", default-features = false, features = ["bundled_freetype", "js_jit", "webcrypto", "webgl"] }
 anyhow.workspace = true
 tracing.workspace = true
 url.workspace = true

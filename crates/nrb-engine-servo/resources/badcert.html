@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Ошибка сертификата</title>
+<style>
+  body { font: 16px/1.5 sans-serif; background: #f4f4f6; color: #222; margin: 0; }
+  main { max-width: 640px; margin: 12vh auto; padding: 0 24px; }
+  h1 { font-size: 26px; margin: 0 0 8px; color: #b00020; }
+  .card { background: #fff; border-radius: 10px; padding: 24px 28px; box-shadow: 0 1px 6px #0002; }
+  code { background: #eee; padding: 2px 6px; border-radius: 4px; word-break: break-word; }
+  button { font-size: 16px; padding: 8px 18px; border-radius: 6px; border: 1px solid #888; background: #fafafa; cursor: pointer; margin-right: 8px; }
+  #allow { border-color: #b00020; color: #b00020; }
+  #bytes { display: none; }
+</style>
+</head>
+<body>
+<main><div class="card">
+  <h1>Соединение не защищено</h1>
+  <p>Не удалось проверить сертификат сайта. Передавать пароли и личные данные на такой сайт небезопасно.</p>
+  <p>Причина: <code>${reason}</code></p>
+  <button id="leave" onclick="history.back()">Назад (рекомендуется)</button>
+  <button id="allow">Всё равно продолжить (небезопасно)</button>
+  <div id="bytes">${bytes}</div>
+</div></main>
+<script>
+  let bytes = document.getElementById('bytes').textContent;
+  let button = document.getElementById('allow');
+  if (bytes.length) {
+      button.onclick = function() {
+          let xhr = new XMLHttpRequest();
+          xhr.open('POST', 'chrome:allowcert');
+          xhr.onloadend = function() {
+              location.reload(true);
+          };
+          xhr.send("${secret}&${bytes}");
+      };
+  } else {
+      button.style.display = "none";
+  }
+</script>
+</body>
+</html>
