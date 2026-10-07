@@ -45,6 +45,24 @@ impl Frame {
     }
 }
 
+impl Frame {
+    /// Порог «пустой страницы»: если один цвет занимает больше этой доли кадра — страница считается пустой.
+    pub const BLANK_RATIO: f64 = 0.995;
+
+    pub fn is_blank(&self) -> bool {
+        self.dominant_color_ratio() > Self::BLANK_RATIO
+    }
+
+    pub fn write_png(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        let mut encoder = png::Encoder::new(file, self.size.width, self.size.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(std::io::Error::other)?;
+        writer.write_image_data(&self.rgba).map_err(std::io::Error::other)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("таймаут загрузки ({0:?})")]
@@ -65,10 +83,20 @@ pub struct SnapshotRequest {
     pub settle: Duration,
 }
 
+/// Результат снимка: кадр и наблюдения за загрузкой.
+#[derive(Debug, Clone)]
+pub struct Snapshot {
+    pub frame: Frame,
+    /// Время от начала навигации до `Complete`.
+    pub load_time: Duration,
+    /// Сообщения консоли страницы (`console.*`) — нужны корпусу совместимости (I3).
+    pub console: Vec<String>,
+}
+
 /// Минимальный интерфейс, нужный для headless-снимков. Интерактивная часть (вкладки, ввод) добавляется
 /// отдельными трейтами по мере итераций (I2), чтобы не раздувать контракт заранее.
 pub trait Snapshotter {
-    fn snapshot(&mut self, req: &SnapshotRequest) -> Result<Frame, EngineError>;
+    fn snapshot(&mut self, req: &SnapshotRequest) -> Result<Snapshot, EngineError>;
 }
 
 #[cfg(test)]

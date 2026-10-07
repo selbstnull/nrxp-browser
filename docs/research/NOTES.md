@@ -56,4 +56,16 @@ Ubuntu 24.04, 16 ядер, 38 ГиБ ОЗУ, 207 ГиБ свободно, DISPLA
 
 ## Спайки (результаты)
 
-_Пока пусто. Формат: `### S<N> — вопрос` → дата, метод, вердикт (да/нет/частично), что это меняет в ITERATIONS.md._
+Формат: `### S<N> — вопрос` → дата, метод, вердикт (да/нет/частично), что это меняет в ITERATIONS.md.
+
+### S1 — прокси в Servo 0.7 (частичный ответ по исходникам, 2026-10-07; на живом трафике ещё не проверено)
+* Настройки — поля `Preferences`: `network_http_proxy_uri`, `network_https_proxy_uri` (пустая строка = без прокси),
+  `network_http_no_proxy`; задаются через `ServoBuilder::preferences(..)` или `Servo::set_preference(name, PrefValue)`.
+* Реализация (`servo-net/connector.rs::ProxyConnector`): `hyper_util::client::proxy::matcher` + `Tunnel` → **только HTTP CONNECT**
+  (с Basic-авторизацией из URL), **SOCKS нет**. Следовательно локальный прокси `nrb-net` обязан говорить HTTP CONNECT
+  (SOCKS5 — опционально, для других клиентов). Имя хоста уходит прокси как есть → DNS на выходной ноде.
+* Прочее полезное: `network_use_webpki_roots` (корни webpki вместо системного хранилища — **включаем**),
+  `network_http_disk_cache`/`network_http_disk_cache_size` (дисковый кэш управляется prefs), `user_agent`.
+* **Осталось проверить:** WebSocket, media (GStreamer `souphttpsrc` имеет собственный сетевой стек — вероятный обход),
+  Web/Service Workers, favicon, devtools. Тест — I5 (tcpdump во время прогона корпуса).
+* HTTP/3 в `servo-net` нет (в `Cargo.toml` нет quinn/h3) → h3 возможен только в режиме I (перехват), I10.

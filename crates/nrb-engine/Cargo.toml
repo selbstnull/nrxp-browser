@@ -7,5 +7,6 @@ license.workspace = true
 description = "Движок браузера за узким трейтом: реализация на Servo лежит в nrb-engine-servo"
 
 [dependencies]
+png = "0.17"
 thiserror.workspace = true
 url.workspace = true
