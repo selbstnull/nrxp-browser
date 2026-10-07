@@ -47,3 +47,5 @@
 * 2026-10-07 · I7 · `nrb-node` (NodeFile, DeviceStore/LocalAuth, Invite, run_ingress), CLI `nrb node …`/`nrb pair`. Доказательство: `node-e2e.sh` «всё прошло» ×3, 15 тестов узла;
   decoy: `openssl s_client` → `CN = www.debian.org`; `snap` через свой узел → ok. Исправлены гонка реестра устройств и печать ссылки с секретами в ошибке.
 * 2026-10-07 · публикация: «Initial commit» (`0abe1c5`, дерево на момент WIP I7) запушен в GitHub `nineAp/nrxp-browser` и Gitea `nineap/nrxp-browser` (ветка `main`). Последующие коммиты — только локально, пока владелец не попросит.
+* 2026-10-07 · I8 · `nrb-deploy` (russh, откат, проверка настоящим клиентом), `nrb deploy`, `tests/deploy/Dockerfile`, `scripts/deploy-e2e.sh`, `scripts/build-node-musl.sh`. Доказательство: `deploy-e2e.sh` «всё прошло» (glibc- и musl-бинарь), 19 юнит-тестов.
+  Побочно поставлено в систему для сборки: `musl-tools` (apt), rustup target `x86_64-unknown-linux-musl`; Docker: образы `ubuntu:24.04`, `nrb-deploy-target`.

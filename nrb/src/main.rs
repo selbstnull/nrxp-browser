@@ -6,6 +6,7 @@ use nrb_engine::Size;
 use url::Url;
 
 mod corpus;
+mod deploy;
 mod fetch;
 mod gui;
 mod node;
@@ -126,6 +127,8 @@ enum Command {
         #[command(subcommand)]
         command: node::NodeCommand,
     },
+    /// Поставить свой узел на сервер по SSH и получить приглашение (откат при сбое, повторный запуск = апгрейд).
+    Deploy(deploy::DeployArgs),
     /// Спариться с чужим узлом по приглашению `nrxp://…` (сохраняет конфиг для `--node`).
     Pair {
         /// Ссылка-приглашение, выданная `nrb node invite`.
@@ -209,6 +212,7 @@ fn main() {
             timeout,
         }),
         Some(Command::Node { command }) => node::run(command),
+        Some(Command::Deploy(args)) => deploy::run(args),
         Some(Command::Pair { link, out }) => node::pair(&link, out),
         Some(Command::Version) => {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));

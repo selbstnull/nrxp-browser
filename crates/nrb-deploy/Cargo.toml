@@ -1,0 +1,19 @@
+[package]
+name = "nrb-deploy"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Деплой узла nrb на VPS по SSH: probe, заливка, systemd, проверка, откат"
+
+[dependencies]
+nrb-node = { path = "../nrb-node" }
+nrb-transport = { path = "../nrb-transport" }
+async-trait = "0.1"
+russh = "0.63"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+thiserror.workspace = true
+tokio = { workspace = true }
+toml = "0.9"
+tracing.workspace = true

@@ -21,7 +21,7 @@
 | Диалоги страницы, `<select>`, контекстное меню, HTTP-авторизация, русские страницы ошибок | работает (GUI-сценарии в Xephyr) |
 | Профиль: куки/localStorage/IndexedDB, история, закладки, восстановление вкладок, настройки | работает |
 | Собственный узел: `nrb node init/run/invite/devices/revoke`, `nrb pair` (без бэкенда) | работает на loopback (тесты + `scripts/node-e2e.sh`: спаривание, отзыв, decoy, `snap` через свой узел); не проверено на реальном VPS, нет GUI-менеджера и musl-сборки |
-| Деплой узла на VPS по SSH (`nrb deploy`) | не начато |
+| Деплой узла на VPS по SSH (`nrb deploy`) | работает на тестовом контейнере (systemd + sshd: установка, апгрейд, откат, удаление); **на реальном VPS не проверялось** |
 | Reverse-egress (домашний браузер за NAT как выход) | не начато (спайк по коду: реализуемо) |
 | HTTP/3 поверх NRXP | не начато; в ядре потолок датаграммы 1150 B < 1200 B у QUIC — нужна правка ядра |
 | Загрузки файлов, поиск по странице, печать, менеджер паролей, MSE-видео, расширения | нет (ограничения Servo 0.7 или не сделано) |
@@ -53,6 +53,7 @@ nrb --node-addr 127.0.0.1:18443 <url>         # через узел NRXP (dev-у
 nrb fetch https://example.org --node-addr …   # загрузка через NRXP без движка
 nrb corpus --node-addr …                      # прогон корпуса из 57 сайтов, отчёт в out/corpus/
 nrb node init --public-host 1.2.3.4 --port 443 && nrb node invite телефон && nrb node run   # свой узел
+scripts/build-node-musl.sh && nrb deploy root@1.2.3.4 --binary target-release/x86_64-unknown-linux-musl/release/nrb   # поставить узел на VPS
 ```
 
 ## Проверки
@@ -64,6 +65,7 @@ scripts/gui-dialogs.sh
 scripts/gui-profile.sh
 scripts/leakwatch.sh /tmp/stop > leaks.txt &  # наблюдатель за прямыми соединениями процесса nrb
 scripts/node-e2e.sh                           # сквозная проверка своего узла (loopback)
+scripts/deploy-e2e.sh                         # деплой в тестовый контейнер с systemd (нужен docker)
 ```
 
 ## Устройство
