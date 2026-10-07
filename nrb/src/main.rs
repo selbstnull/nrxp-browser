@@ -8,6 +8,7 @@ use url::Url;
 mod corpus;
 mod fetch;
 mod gui;
+mod node;
 mod profile;
 mod snap;
 mod tunnel;
@@ -120,6 +121,19 @@ enum Command {
         #[arg(long, default_value = "60s", value_parser = humantime::parse_duration)]
         timeout: Duration,
     },
+    /// Свой узел NRXP: создать, запустить, выдать приглашение устройству, отозвать устройство.
+    Node {
+        #[command(subcommand)]
+        command: node::NodeCommand,
+    },
+    /// Спариться с чужим узлом по приглашению `nrxp://…` (сохраняет конфиг для `--node`).
+    Pair {
+        /// Ссылка-приглашение, выданная `nrb node invite`.
+        link: String,
+        /// Куда сохранить конфиг (по умолчанию `~/.local/share/netrunner-browser/nodes/<имя>.toml`).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Версия.
     Version,
 }
@@ -194,6 +208,8 @@ fn main() {
             include,
             timeout,
         }),
+        Some(Command::Node { command }) => node::run(command),
+        Some(Command::Pair { link, out }) => node::pair(&link, out),
         Some(Command::Version) => {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));
             0

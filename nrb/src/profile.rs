@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "servo"), allow(dead_code))]
 //! Профиль браузера: каталог с куками, localStorage, IndexedDB, HSTS и дисковым кэшем (хранит Servo).
 
 use std::path::PathBuf;

@@ -3,7 +3,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use nrb_net::proxy::{LocalProxy, ProxyPolicy};
 use nrb_transport::{NodeConfig, NrxpTransport};
@@ -28,6 +27,7 @@ impl NodeArgs {
     }
 }
 
+#[cfg_attr(not(feature = "servo"), allow(dead_code))]
 pub struct Tunnel {
     // Порядок важен: прокси и транспорт должны умереть раньше рантайма.
     proxy: LocalProxy,
@@ -89,6 +89,7 @@ impl nrb_shell::TunnelStatus for Tunnel {
     }
 
     fn summary(&self) -> String {
+        use std::sync::atomic::Ordering;
         let stats = self.proxy.stats();
         let legs = self.transport.muxer().active_legs_count();
         let human = |bytes: u64| match bytes {

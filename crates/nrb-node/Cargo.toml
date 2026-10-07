@@ -1,0 +1,27 @@
+[package]
+name = "nrb-node"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Узел NRXP внутри nrb: ingress, реестр устройств без бэкенда, приглашения"
+
+[dependencies]
+nrb-transport = { path = "../nrb-transport" }
+# Те же пути, что у nrb-transport: worktree соседнего netrunner-proxy (scripts/setup-upstream.sh).
+netrunner-core = { path = "../../.nrb-dev/netrunner-proxy/core", features = ["ring-aead"] }
+netrunner-logger = { path = "../../.nrb-dev/netrunner-proxy/tools/log" }
+async-trait = "0.1"
+getrandom = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror.workspace = true
+tokio = { workspace = true }
+tokio-util = "0.7"
+toml = "0.9"
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

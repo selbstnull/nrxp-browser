@@ -38,6 +38,11 @@ async fn transport(args: &Args) -> Result<Arc<dyn Transport>, String> {
         return Ok(Arc::new(SystemTransport));
     }
     let config = match (&args.node, &args.node_addr) {
+        (Some(link), _) if link.to_string_lossy().starts_with("nrxp://") => {
+            nrb_node::Invite::parse(&link.to_string_lossy())
+                .map_err(|e| e.to_string())?
+                .to_node_config()
+        }
         (Some(path), _) => NodeConfig::from_toml_file(path).map_err(|e| e.to_string())?,
         (None, Some(addr)) => NodeConfig::anonymous(addr.clone()),
         (None, None) => NodeConfig::from_env().map_err(|e| {

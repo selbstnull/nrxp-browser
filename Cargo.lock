@@ -4541,6 +4541,7 @@ dependencies = [
  "nrb-engine",
  "nrb-engine-servo",
  "nrb-net",
+ "nrb-node",
  "nrb-shell",
  "nrb-transport",
  "serde",
@@ -4591,6 +4592,27 @@ dependencies = [
  "tracing",
  "url",
  "webpki-roots",
+]
+
+[[package]]
+name = "nrb-node"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "getrandom 0.3.4",
+ "netrunner-core",
+ "netrunner-logger",
+ "nrb-transport",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "url",
 ]
 
 [[package]]
