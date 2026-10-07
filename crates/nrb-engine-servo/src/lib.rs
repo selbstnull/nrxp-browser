@@ -34,6 +34,8 @@ pub fn install_crypto_provider() {
 #[derive(Default)]
 struct PageState {
     status: Cell<Option<LoadStatus>>,
+    /// Servo сообщил о новом кадре: встраиватель обязан вызвать `WebView::paint` (в окне это делает цикл отрисовки).
+    need_paint: Cell<bool>,
     crashed: RefCell<Option<String>>,
     console: RefCell<Vec<String>>,
     screenshot: RefCell<Option<Result<servo::RgbaImage, String>>>,
@@ -44,6 +46,10 @@ struct PageDelegate(Rc<PageState>);
 impl WebViewDelegate for PageDelegate {
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
         self.0.status.set(Some(status));
+    }
+
+    fn notify_new_frame_ready(&self, _webview: WebView) {
+        self.0.need_paint.set(true);
     }
 
     fn notify_crashed(&self, _webview: WebView, reason: String, _backtrace: Option<String>) {
@@ -102,9 +108,19 @@ impl ServoSnapshotter {
     }
 
     /// Крутит движок, пока `done()` не вернёт `true` или не истечёт срок. `Ok(false)` — срок вышел.
-    fn pump(&self, deadline: Instant, mut done: impl FnMut() -> bool) -> Result<bool, EngineError> {
+    fn pump(
+        &self,
+        webview: Option<&WebView>,
+        deadline: Instant,
+        mut done: impl FnMut() -> bool,
+    ) -> Result<bool, EngineError> {
         loop {
             self.servo.spin_event_loop();
+            if self.state.need_paint.replace(false) {
+                if let Some(webview) = webview {
+                    webview.paint();
+                }
+            }
             if let Some(reason) = self.state.crashed.borrow().clone() {
                 return Err(EngineError::Crashed(reason));
             }
@@ -131,6 +147,7 @@ impl Snapshotter for ServoSnapshotter {
             .map_err(|e| EngineError::Other(format!("make_current: {e:?}")))?;
 
         self.state.status.set(None);
+        self.state.need_paint.set(false);
         self.state.console.borrow_mut().clear();
         *self.state.crashed.borrow_mut() = None;
         *self.state.screenshot.borrow_mut() = None;
@@ -143,7 +160,7 @@ impl Snapshotter for ServoSnapshotter {
             .build();
 
         let state = self.state.clone();
-        let completed = self.pump(deadline, || state.status.get() == Some(LoadStatus::Complete))?;
+        let completed = self.pump(Some(&webview), deadline, || state.status.get() == Some(LoadStatus::Complete))?;
         if !completed {
             return Err(EngineError::Timeout(req.timeout));
         }
@@ -151,7 +168,7 @@ impl Snapshotter for ServoSnapshotter {
 
         // Страницы, дорисовывающиеся скриптами: даём движку поработать ещё `settle`.
         if !req.settle.is_zero() {
-            self.pump(Instant::now() + req.settle, || false)?;
+            self.pump(Some(&webview), Instant::now() + req.settle, || false)?;
         }
 
         let sink = self.state.clone();
@@ -160,7 +177,7 @@ impl Snapshotter for ServoSnapshotter {
         });
         let state = self.state.clone();
         let shot_deadline = Instant::now() + req.timeout.min(Duration::from_secs(15));
-        if !self.pump(shot_deadline, || state.screenshot.borrow().is_some())? {
+        if !self.pump(Some(&webview), shot_deadline, || state.screenshot.borrow().is_some())? {
             return Err(EngineError::Timeout(req.timeout));
         }
         let image = self

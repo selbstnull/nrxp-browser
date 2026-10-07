@@ -69,3 +69,15 @@ Ubuntu 24.04, 16 ядер, 38 ГиБ ОЗУ, 207 ГиБ свободно, DISPLA
 * **Осталось проверить:** WebSocket, media (GStreamer `souphttpsrc` имеет собственный сетевой стек — вероятный обход),
   Web/Service Workers, favicon, devtools. Тест — I5 (tcpdump во время прогона корпуса).
 * HTTP/3 в `servo-net` нет (в `Cargo.toml` нет quinn/h3) → h3 возможен только в режиме I (перехват), I10.
+
+### S0 — собирается ли Servo на этой машине (2026-10-07) — **да**
+* `servo = "=0.7.0"` (features: `bundled, js_jit, webcrypto, webgl`), `cargo build -p nrb --features servo` (debug): ~2 мин 44 с на 16 ядрах
+  после загрузки зависимостей; `target/` ≈ см. PROGRESS; бинарь debug ≈ 1,1 ГБ.
+* **Критично: `Cargo.lock`.** Без lock-файла cargo берёт свежий пре-релиз `pkcs1 0.8.0-rc.5`, несовместимый с `rsa 0.10.0-rc.18` → сборка падает.
+  Решение: взять `Cargo.lock` из архива `servo-0.7.0` (лежит рядом с исходниками в `~/.cargo/registry/src/*/servo-0.7.0/Cargo.lock`) как основу
+  нашего lock-файла и **не делать `cargo update` вслепую**. При смене версии Servo — повторить.
+* crates.io CDN нестабилен на больших крейтах (`servo-fonts` 6,4 МБ → HTTP 500/таймауты) → `scripts/fetch-deps.sh` с повторами.
+* Системные пакеты, которые пришлось поставить: `clang cmake libclang-dev llvm-dev libfontconfig1-dev libunwind-dev libudev-dev libgles2-mesa-dev libvulkan-dev`.
+* Встраивание: headless-снимок требует, чтобы встраиватель вызывал `WebView::paint()` по `notify_new_frame_ready`
+  (автомат скриншота в `servo-paint/screenshot.rs` иначе не завершается); `SoftwareRenderingContext::new(PhysicalSize)` работает без дисплея;
+  `dpi` — отдельная зависимость (Servo её не реэкспортирует); `rustls` провайдер обязателен (`aws_lc_rs`).

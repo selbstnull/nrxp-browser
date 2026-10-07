@@ -43,8 +43,8 @@
 
 | ID | Этап | Зависит от | Статус |
 |---|---|---|---|
-| I0 | Репозиторий и каркас | — | doing |
-| I1 | Servo собирается и рендерит (headless → PNG) | I0 | todo |
+| I0 | Репозиторий и каркас | — | done |
+| I1 | Servo собирается и рендерит (headless → PNG) | I0 | done |
 | I2 | Окно, вкладки, навигация — «открывает сайты» | I1 | todo |
 | I3 | Корпус сайтов, отчёты, регрессии | I1 (лучше I2) | todo |
 | I4 | NRXP-транспорт и `nrb fetch` | I0 | todo |
@@ -69,38 +69,43 @@
 ## 4. Этапы «рендерит и открывает сайты»
 
 ### I0 — Репозиторий и каркас
-Статус: doing | Зависит от: —
+Статус: done | Зависит от: —
 **Цель** — рабочий Cargo-workspace с документацией и проверкой окружения; дальше всё строится на нём.
 **Почему в этом месте** — без каркаса и воспроизводимого окружения I1 нечем проверять.
 **Задачи**
 - [x] `git init`, `.gitignore`, `README.md`, `docs/{ARCHITECTURE,ITERATIONS,PROGRESS}.md`, `docs/research/NOTES.md`
-- [ ] Cargo-workspace: `nrb` (бинарь, clap), `crates/nrb-engine` (trait `Engine` + общие типы, без Servo)
-- [ ] `rust-toolchain.toml` (≥ 1.88 — требование `servo` 0.7), `rustfmt.toml`
-- [ ] `scripts/check-env.sh`: что есть/чего нет для сборки Servo (clang, cmake, fontconfig, unwind, udev, X11/Wayland, GL/Vulkan, GStreamer — опционально) с готовой командой `apt install …`
-- [ ] Первый коммит
+- [x] Cargo-workspace: `nrb` (бинарь, clap), `crates/nrb-engine` (trait `Engine` + общие типы, без Servo)
+- [x] `rust-toolchain.toml` (≥ 1.88 — требование `servo` 0.7), `rustfmt.toml`
+- [x] `scripts/check-env.sh`: что есть/чего нет для сборки Servo (clang, cmake, fontconfig, unwind, udev, X11/Wayland, GL/Vulkan, GStreamer — опционально) с готовой командой `apt install …`
+- [x] Первый коммит
 **Результат** — `cargo check --workspace` проходит; `scripts/check-env.sh` печатает отчёт.
 **Приёмка** — `cargo check --workspace && scripts/check-env.sh` → exit 0 (отчёт может содержать «не хватает», это информация, не ошибка).
 **Риски** — нет.
 
 ### I1 — Servo собирается и рендерит (headless → PNG)
-Статус: todo | Зависит от: I0 | Спайки: S0 (собирается ли Servo на этой машине)
+Статус: done (2026-10-07) | Зависит от: I0 | Спайки: S0 (закрыт) (собирается ли Servo на этой машине)
 **Цель** — `nrb snap <url> -o out.png` загружает страницу через Servo по системной сети и сохраняет скриншот.
 **Почему в этом месте** — это главный технический риск всего проекта (тяжёлая сборка, API встраивания). Пока его нет — всё остальное бессмысленно.
 **Задачи**
-- [ ] Спайк S0: поставить недостающие системные пакеты (по отчёту `check-env.sh`), собрать `servo = "=0.7.0"` (+ `default-features` по необходимости), записать время сборки и размер `target/` в NOTES.md
-- [ ] `crates/nrb-engine-servo`: реализация `Engine` поверх `servo::{Servo, ServoBuilder, WebView, WebViewBuilder, WebViewDelegate}`; зависимость на Servo — **только** здесь и за фичей `servo` бинаря `nrb`
-- [ ] Headless-рендер: программный `RenderingContext` (software/offscreen), без окна и дисплея; чтение пикселей `WebView` → PNG
-- [ ] Ожидание готовности: `notify_load_status_changed(Complete)` + таймаут (`--timeout`, по умолчанию 30 с) + опциональная пауза/`--wait-for-idle`
-- [ ] Размер вьюпорта `--size 1280x800`, `--scale`
-- [ ] Коды возврата: 0 — снимок есть; 2 — таймаут; 3 — крах/ошибка движка; 4 — пустой кадр (все пиксели одного цвета)
-- [ ] Установка `rustls` crypto provider (в примере Servo — `aws_lc_rs`; для узла нам нужен `ring` → зафиксировать решение в NOTES.md)
-- [ ] CI-заготовка: скрипт `scripts/build-servo-cache.sh`
+- [x] Спайк S0: поставить недостающие системные пакеты (по отчёту `check-env.sh`), собрать `servo = "=0.7.0"` (+ `default-features` по необходимости), записать время сборки и размер `target/` в NOTES.md
+- [x] `crates/nrb-engine-servo`: реализация `Engine` поверх `servo::{Servo, ServoBuilder, WebView, WebViewBuilder, WebViewDelegate}`; зависимость на Servo — **только** здесь и за фичей `servo` бинаря `nrb`
+- [x] Headless-рендер: программный `RenderingContext` (software/offscreen), без окна и дисплея; чтение пикселей `WebView` → PNG
+- [x] Ожидание готовности: `notify_load_status_changed(Complete)` + таймаут (`--timeout`, по умолчанию 30 с) + опциональная пауза/`--wait-for-idle`
+- [x] Размер вьюпорта `--size 1280x800`, `--scale`
+- [x] Коды возврата: 0 — снимок есть; 2 — таймаут; 3 — крах/ошибка движка; 4 — пустой кадр (все пиксели одного цвета)
+- [x] Установка `rustls` crypto provider (в примере Servo — `aws_lc_rs`; для узла нам нужен `ring` → зафиксировать решение в NOTES.md)
+- [ ] CI-заготовка: скрипт `scripts/build-servo-cache.sh` (перенесено в I14)
 **Результат** — бинарь `nrb` с подкомандой `snap`; крейты `nrb-engine`, `nrb-engine-servo`.
 **Приёмка**
 - `nrb snap https://example.org -o /tmp/a.png` → 0, файл PNG 1280×800, есть минимум 2 различных цвета, различимый заголовок «Example Domain» (проверка вручную + проверка «не пустой»)
 - то же для `https://en.wikipedia.org/wiki/Rust_(programming_language)` и `https://news.ycombinator.com`
 - `nrb snap http://127.0.0.1:1/ -o x.png` → не 0, без паники
 **Риски / что делать, если нет** — Servo не собирается (SpiderMonkey/clang) → фиксируем причину, пробуем `servo-fetch-cli`/готовый servoshell как диагностику; если принципиально нет — этап `I1.fallback`: оценка CEF/Chromium (решение владельца, архитектура допускает второй `Engine`).
+
+**Итог (факты, 2026-10-07):** `nrb snap` работает; example.org, Wikipedia (Rust), Hacker News рендерятся корректно (кириллица, RTL-арабский, CJK, SVG);
+`http://127.0.0.1:1/` → код 4 (кадр пустой — Servo рисует свою страницу ошибки), без паники. **Известные дефекты (в корпус I3):**
+bbc.com/news — таймаут 30 с; Wikipedia — часть иконок (SVG-маски) рисуется чёрными квадратами; на Wikipedia ожидание готовности скриншота
+~11 с при `load=1,4 с`. Страницы ошибок движка надо отличать от «пустых» по URL/статусу (I3), а не по цвету.
 
 ### I2 — Окно, вкладки, навигация («открывает сайты»)
 Статус: todo | Зависит от: I1
@@ -295,3 +300,4 @@
 ## 9. Журнал изменений плана
 
 * 2026-10-07 — первая версия. Основание: `ARCHITECTURE.md` v1; приоритет владельца «рендерит / работает / открывает сайты» → I1–I3 перед туннелем.
+* 2026-10-07 — I1 закрыт; `scripts/build-servo-cache.sh` перенесён из I1 в I14; `Cargo.lock` Servo нужно держать закреплённым (см. NOTES S0).

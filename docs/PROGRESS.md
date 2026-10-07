@@ -18,3 +18,7 @@
 
 * 2026-10-07 · I0 · репозиторий создан (локально, без remote), документы перенесены, каркас workspace
   (`nrb`, `nrb-engine`), `scripts/check-env.sh`.
+* 2026-10-07 · I1 · Servo 0.7.0 собран, `nrb snap` рендерит страницы. Доказательство:
+  `nrb snap https://example.org -o out/example.png` → `ok 1280x800 load=221ms dominant=0.964` (exit 0, скриншот проверен глазами: кириллица, арабский, CJK, SVG);
+  Wikipedia (Rust) → ok, load=1461ms; Hacker News → ok, load=2721ms; bbc.com/news → exit 2 (таймаут); `http://127.0.0.1:1/` → exit 4 без паники.
+  Коммит: см. `git log` (`I1: …`).
