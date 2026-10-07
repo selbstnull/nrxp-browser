@@ -72,7 +72,7 @@ pub fn run(config: ShellConfig) -> anyhow::Result<()> {
     let event_loop = EventLoop::<WakerEvent>::with_user_event().build()?;
     let mut app = App::Initial {
         proxy: event_loop.create_proxy(),
-        config: Some(config),
+        config: Some(Box::new(config)),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -317,7 +317,7 @@ impl ServoDelegate for EngineDelegate {
 enum App {
     Initial {
         proxy: EventLoopProxy<WakerEvent>,
-        config: Option<ShellConfig>,
+        config: Option<Box<ShellConfig>>,
     },
     Running(Box<Running>),
 }
@@ -366,7 +366,7 @@ impl ApplicationHandler<WakerEvent> for App {
         let App::Initial { proxy, config } = self else {
             return;
         };
-        let config = config.take().unwrap_or_default();
+        let config = config.take().map(|c| *c).unwrap_or_default();
         match Running::new(event_loop, proxy.clone(), config) {
             Ok(running) => *self = App::Running(Box::new(running)),
             Err(error) => {
