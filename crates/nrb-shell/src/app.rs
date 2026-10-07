@@ -24,12 +24,20 @@ use winit::window::{CursorIcon, Window, WindowId};
 use crate::keys;
 use crate::ui::{self, Action, TabInfo, ToolbarState};
 
+/// Состояние туннеля для индикатора в тулбаре. Реализует вызывающий код (`nrb`), оболочка о NRXP ничего не знает.
+pub trait TunnelStatus: Send + Sync {
+    fn up(&self) -> bool;
+    /// Короткая строка для бейджа, например «NRXP host:port · ног 4 · ↓1.2 МБ».
+    fn summary(&self) -> String;
+}
+
 /// Настройки оболочки.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ShellConfig {
     pub initial_urls: Vec<Url>,
     pub servo: ServoConfig,
     pub search: String,
+    pub tunnel: Option<std::sync::Arc<dyn TunnelStatus>>,
 }
 
 impl Default for ShellConfig {
@@ -38,6 +46,7 @@ impl Default for ShellConfig {
             initial_urls: Vec::new(),
             servo: ServoConfig::default(),
             search: omnibox::DEFAULT_SEARCH.into(),
+            tunnel: None,
         }
     }
 }
@@ -170,6 +179,8 @@ struct Running {
     modifiers: ModifiersState,
     search: String,
     exit: bool,
+    tunnel: Option<std::sync::Arc<dyn TunnelStatus>>,
+    next_badge_refresh: std::time::Instant,
 }
 
 impl ApplicationHandler<WakerEvent> for App {
@@ -184,6 +195,22 @@ impl ApplicationHandler<WakerEvent> for App {
                 eprintln!("не удалось запустить оболочку: {error:#}");
                 event_loop.exit();
             }
+        }
+    }
+
+    /// Бейдж туннеля меняется без событий окна — раз в секунду просим перерисовку.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let App::Running(running) = self
+            && running.tunnel.is_some()
+        {
+            let now = std::time::Instant::now();
+            if now >= running.next_badge_refresh {
+                running.next_badge_refresh = now + std::time::Duration::from_secs(1);
+                running.window.request_redraw();
+            }
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                running.next_badge_refresh,
+            ));
         }
     }
 
@@ -293,12 +320,15 @@ impl Running {
                 can_back: false,
                 can_forward: false,
                 loading: false,
+                tunnel: None,
             },
             toolbar_px,
             cursor: PhysicalPosition::new(0.0, 0.0),
             modifiers: ModifiersState::empty(),
             search: config.search,
             exit: false,
+            tunnel: config.tunnel,
+            next_badge_refresh: std::time::Instant::now(),
         };
 
         if config.initial_urls.is_empty() {
@@ -641,6 +671,8 @@ impl Running {
         self.window_ctx.prepare_for_rendering();
         let size = self.window.inner_size();
         let scale = self.window.scale_factor() as f32;
+
+        self.toolbar.tunnel = self.tunnel.as_ref().map(|t| (t.summary(), t.up()));
 
         // Состояние тулбара из активной вкладки.
         self.sync_url_bar(false);

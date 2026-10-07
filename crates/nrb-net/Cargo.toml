@@ -9,6 +9,7 @@ description = "Сетевой слой браузера: HTTP (h1/h2) повер
 [dependencies]
 nrb-transport = { path = "../nrb-transport" }
 bytes = "1"
+getrandom = "0.3"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

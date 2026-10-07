@@ -1,6 +1,8 @@
 //! HTTP-клиент браузера поверх [`Transport`]: h1/h2 с TLS (корни webpki зашиты в бинарь — системное хранилище не нужно).
 //! Сейчас это диагностический `nrb fetch`; кэш, куки, HSTS и h3 добавляются здесь же (I10, I12).
 
+pub mod proxy;
+
 use std::sync::Arc;
 use std::time::Duration;
 

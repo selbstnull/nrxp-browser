@@ -9,6 +9,7 @@ mod corpus;
 mod fetch;
 mod gui;
 mod snap;
+mod tunnel;
 
 #[derive(Parser)]
 #[command(
@@ -23,8 +24,10 @@ struct Cli {
     /// Адреса или поисковые запросы для открытия во вкладках (без подкоманды запускается окно).
     urls: Vec<String>,
     /// Прокси для движка (HTTP CONNECT), например http://127.0.0.1:3128.
-    #[arg(long)]
+    #[arg(long, env = "NRB_PROXY_URL", hide_env_values = true, conflicts_with_all = ["node", "node_addr"])]
     proxy: Option<String>,
+    #[command(flatten)]
+    node: tunnel::NodeArgs,
 }
 
 #[derive(Subcommand)]
@@ -45,11 +48,13 @@ enum Command {
         #[arg(long, default_value = "500ms", value_parser = humantime::parse_duration)]
         settle: Duration,
         /// Прокси для движка, например http://127.0.0.1:3128.
-        #[arg(long)]
+        #[arg(long, env = "NRB_PROXY_URL", hide_env_values = true, conflicts_with_all = ["node", "node_addr"])]
         proxy: Option<String>,
         /// Машиночитаемый отчёт (JSON в одну строку) в stdout.
         #[arg(long)]
         json: bool,
+        #[command(flatten)]
+        node: tunnel::NodeArgs,
     },
     /// Прогнать корпус сайтов (по одному процессу `nrb snap` на сайт) и собрать отчёт совместимости.
     Corpus {
@@ -77,9 +82,11 @@ enum Command {
         /// Таймаут одного сайта.
         #[arg(long, default_value = "30s", value_parser = humantime::parse_duration)]
         timeout: Duration,
-        /// Прокси для движка (передаётся каждому `nrb snap`).
-        #[arg(long)]
+        /// Прокси для движка (передаётся каждому `nrb snap` через переменную окружения).
+        #[arg(long, conflicts_with_all = ["node", "node_addr"])]
         proxy: Option<String>,
+        #[command(flatten)]
+        node: tunnel::NodeArgs,
         /// Не падать из-за baseline (только отчёт).
         #[arg(long)]
         no_ratchet: bool,
@@ -124,6 +131,7 @@ fn main() {
             settle,
             proxy,
             json,
+            node,
         }) => snap::run(snap::Args {
             url,
             output,
@@ -132,6 +140,7 @@ fn main() {
             settle,
             proxy,
             json,
+            node,
         }),
         Some(Command::Corpus {
             sites,
@@ -143,6 +152,7 @@ fn main() {
             parallel,
             timeout,
             proxy,
+            node,
             no_ratchet,
         }) => corpus::run(corpus::Args {
             sites,
@@ -154,6 +164,7 @@ fn main() {
             parallel,
             timeout,
             proxy,
+            node,
             no_ratchet,
         }),
         Some(Command::Fetch {
@@ -177,7 +188,7 @@ fn main() {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));
             0
         }
-        None => gui::run(cli.urls, cli.proxy),
+        None => gui::run(cli.urls, cli.proxy, cli.node),
     };
     std::process::exit(code);
 }

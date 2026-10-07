@@ -17,6 +17,7 @@ pub struct Args {
     pub proxy: Option<String>,
     /// Печатать машиночитаемый отчёт (одна строка JSON) вместо человекочитаемой строки.
     pub json: bool,
+    pub node: crate::tunnel::NodeArgs,
 }
 
 /// Отчёт `nrb snap --json` (читает `nrb corpus`).
@@ -47,8 +48,21 @@ pub fn run(args: Args) -> i32 {
     use nrb_engine::{EngineError, SnapshotRequest, Snapshotter};
     use nrb_engine_servo::{ServoConfig, ServoSnapshotter};
 
+    // Туннель живёт до конца процесса: движок ходит в сеть только через него.
+    let tunnel = if args.node.enabled() {
+        match crate::tunnel::start(&args.node) {
+            Ok(tunnel) => Some(tunnel),
+            Err(error) => {
+                eprintln!("туннель: {error}");
+                return 3;
+            }
+        }
+    } else {
+        None
+    };
+    let proxy = tunnel.as_ref().map(|t| t.proxy_url()).or(args.proxy);
     let mut engine = match ServoSnapshotter::new(&ServoConfig {
-        proxy: args.proxy,
+        proxy,
         user_agent: None,
     }) {
         Ok(engine) => engine,

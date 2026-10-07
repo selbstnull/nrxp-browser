@@ -7,4 +7,4 @@ mod app;
 mod keys;
 mod ui;
 
-pub use app::{ShellConfig, run};
+pub use app::{ShellConfig, TunnelStatus, run};

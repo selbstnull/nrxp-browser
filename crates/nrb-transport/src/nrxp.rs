@@ -108,6 +108,35 @@ impl NrxpTransport {
             dispatch.clear();
         });
 
+        // Сторож: когда пропадают ВСЕ ноги, состояние потоков на узле (возможно, перезапущенном) считается потерянным —
+        // закрываем все открытые потоки (клиент получит EOF и повторит запрос), а не оставляем их висеть вечно.
+        // Одиночная потеря ноги потоки не трогает: ядро переносит их на живые ноги.
+        let watched = Arc::downgrade(&streams);
+        let watched_muxer = muxer.clone();
+        tokio::spawn(async move {
+            let mut was_up = true;
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let Some(streams) = watched.upgrade() else {
+                    return;
+                };
+                let up = watched_muxer.active_legs_count() > 0;
+                if was_up && !up {
+                    let ids: Vec<u64> = streams.iter().map(|entry| *entry.key()).collect();
+                    tracing::warn!(
+                        streams = ids.len(),
+                        "все ноги туннеля потеряны — закрываем открытые потоки"
+                    );
+                    for id in ids {
+                        if let Some((_, stream)) = streams.remove(&id) {
+                            let _ = stream.send(Event::Close);
+                        }
+                    }
+                }
+                was_up = up;
+            }
+        });
+
         Ok(Self {
             muxer,
             to_tunnel,
@@ -125,6 +154,13 @@ impl NrxpTransport {
 #[async_trait]
 impl Transport for NrxpTransport {
     async fn open_tcp(&self, host: &str, port: u16) -> io::Result<BoxStream> {
+        // Нет ни одной ноги — `Connect` ушёл бы в никуда (и повис бы без ошибки): отказываем сразу.
+        if self.muxer.active_legs_count() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "туннель недоступен: нет активных ног",
+            ));
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         self.streams.insert(id, events_tx);

@@ -13,6 +13,8 @@ pub struct ToolbarState {
     pub can_back: bool,
     pub can_forward: bool,
     pub loading: bool,
+    /// Индикатор туннеля (текст, жив ли) — справа в строке вкладок.
+    pub tunnel: Option<(String, bool)>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -64,6 +66,20 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
                 .clicked()
             {
                 actions.push(Action::NewTab);
+            }
+            if let Some((text, up)) = &state.tunnel {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let color = if *up {
+                        egui::Color32::from_rgb(90, 200, 120)
+                    } else {
+                        egui::Color32::from_rgb(230, 90, 80)
+                    };
+                    ui.label(egui::RichText::new(text).color(color).small());
+                    // Кружок рисуем сами: в шрифте egui нет символа «●».
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 4.0, color);
+                });
             }
         });
         ui.horizontal(|ui| {

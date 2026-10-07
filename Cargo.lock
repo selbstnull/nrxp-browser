@@ -4579,6 +4579,7 @@ name = "nrb-net"
 version = "0.0.1"
 dependencies = [
  "bytes",
+ "getrandom 0.3.4",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -7432,8 +7433,6 @@ dependencies = [
 [[package]]
 name = "servo-net"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98af1ef87ba1355f3fae135c4b4ff26b52b75bf5eea1802751ecf3ba5ce65f15"
 dependencies = [
  "async-compression",
  "async-recursion",

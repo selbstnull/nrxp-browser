@@ -23,7 +23,9 @@ check() { # описание, подстрока заголовка
   if [[ "$title" == *"$2"* ]]; then echo "ok   $1 ($title)"; else echo "FAIL $1: ожидалось «$2», заголовок «$title»"; fail=1; fi
 }
 
-"$NRB" "https://example.org" > "$OUT/nrb.log" 2>&1 &
+# NRB_ARGS — доп. аргументы nrb, например "--node-addr 127.0.0.1:18443" (весь трафик движка через туннель).
+# shellcheck disable=SC2086
+"$NRB" ${NRB_ARGS:-} "https://example.org" > "$OUT/nrb.log" 2>&1 &
 PID=$!
 trap 'kill $PID $XEPHYR 2>/dev/null' EXIT
 for _ in $(seq 1 40); do WID=$(xdotool search --pid "$PID" --name "nrb" 2>/dev/null | tail -1); [ -n "${WID:-}" ] && break; sleep 0.5; done

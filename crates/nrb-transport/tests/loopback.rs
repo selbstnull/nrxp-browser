@@ -40,16 +40,20 @@ async fn start_node() -> Option<Node> {
 }
 
 async fn start_node_with_env(envs: &[(&str, String)]) -> Option<Node> {
+    start_node_at(None, envs).await
+}
+
+async fn start_node_at(fixed_port: Option<u16>, envs: &[(&str, String)]) -> Option<Node> {
     let Some(binary) = server_binary() else {
         eprintln!(
             "ПРОПУСК: нет netrunner-server (соберите `cargo build -p netrunner-server --release` в netrunner-proxy или задайте NRB_SERVER_BIN)"
         );
         return None;
     };
-    let port = {
+    let port = fixed_port.unwrap_or_else(|| {
         let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         probe.local_addr().unwrap().port()
-    };
+    });
     // NRB_TEST_SERVER_LOG=файл — писать лог узла (JSON в stdout) для разбора падений.
     let log = std::env::var_os("NRB_TEST_SERVER_LOG").and_then(|p| std::fs::File::create(p).ok());
     let child = Command::new(binary)
@@ -390,4 +394,65 @@ async fn assert_rejected(who: &str, config: &NodeConfig, echo_port: u16) {
             );
         }
     }
+}
+
+async fn echo_once(transport: &NrxpTransport, port: u16) -> std::io::Result<()> {
+    let mut stream = transport.open_tcp("127.0.0.1", port).await?;
+    stream.write_all(b"ping").await?;
+    let mut buf = [0u8; 4];
+    tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut buf))
+        .await
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
+    assert_eq!(&buf, b"ping");
+    Ok(())
+}
+
+/// Узел перезапускается: ядро само переподключает ноги (backoff), старые потоки умирают, новые снова работают
+/// на той же сессии транспорта — браузеру не нужно пересоздавать `NrxpTransport`.
+#[tokio::test(flavor = "multi_thread")]
+async fn survives_node_restart() {
+    let Some(node) = start_node().await else {
+        return;
+    };
+    let port = node.addr.port();
+    let transport = transport(&node).await;
+    let echo = echo_server().await;
+    echo_once(&transport, echo.port())
+        .await
+        .expect("до перезапуска узла эхо должно работать");
+
+    // Поток, открытый до падения узла: когда пропадают все ноги, транспорт закрывает открытые потоки (EOF), а не оставляет висеть.
+    let mut old_stream = transport.open_tcp("127.0.0.1", echo.port()).await.unwrap();
+    old_stream.write_all(b"x").await.unwrap();
+    drop(node); // kill
+
+    let mut sink = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(30), old_stream.read_to_end(&mut sink))
+        .await
+        .expect("поток не закрылся после потери всех ног");
+    // Пока туннель лежит, новые потоки отклоняются сразу (kill-switch), а не висят.
+    let refused = tokio::time::timeout(
+        Duration::from_secs(5),
+        transport.open_tcp("127.0.0.1", echo.port()),
+    )
+    .await
+    .expect("open_tcp завис при мёртвом туннеле");
+    assert!(
+        refused.is_err(),
+        "при мёртвом туннеле open_tcp обязан вернуть ошибку"
+    );
+
+    let _node2 = start_node_at(Some(port), &[]).await.unwrap();
+    let started = std::time::Instant::now();
+    let mut recovered_after = None;
+    while started.elapsed() < Duration::from_secs(90) {
+        if echo_once(&transport, echo.port()).await.is_ok() {
+            recovered_after = Some(started.elapsed());
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let recovered_after =
+        recovered_after.expect("транспорт не восстановился за 90 с после перезапуска узла");
+    eprintln!("восстановление после перезапуска узла: {recovered_after:?}");
 }

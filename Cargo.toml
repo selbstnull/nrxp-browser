@@ -17,3 +17,8 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
+
+# Servo с нашими патчами (patches/servo; готовит scripts/setup-upstream.sh): WebSocket обязан ходить через прокси,
+# иначе при работе через туннель он открывает прямое соединение (утечка IP).
+[patch.crates-io]
+servo-net = { path = ".nrb-dev/servo-net" }

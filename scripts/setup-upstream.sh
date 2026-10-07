@@ -12,15 +12,37 @@ WT=".nrb-dev/netrunner-proxy"
 BRANCH="nrb/connect-reliable"
 
 [ -d "$SRC/.git" ] || [ -f "$SRC/.git" ] || { echo "нет репозитория $SRC (задайте NRB_PROXY_SRC)"; exit 1; }
-if [ -d "$WT" ]; then echo "worktree уже есть: $WT ($(git -C "$WT" log --oneline -1))"; exit 0; fi
-
-mkdir -p .nrb-dev
-if git -C "$SRC" rev-parse --verify -q "$BRANCH" >/dev/null; then
-  git -C "$SRC" worktree add "$PWD/$WT" "$BRANCH"
+if [ -d "$WT" ]; then
+  echo "worktree уже есть: $WT ($(git -C "$WT" log --oneline -1))"
 else
-  git -C "$SRC" worktree add -b "$BRANCH" "$PWD/$WT" HEAD
-  for patch in patches/proxy/*.patch; do
-    git -C "$WT" -c user.name="${GIT_AUTHOR_NAME:-nrb}" -c user.email="${GIT_AUTHOR_EMAIL:-nrb@localhost}" am "$PWD/$patch"
-  done
+  mkdir -p .nrb-dev
+  if git -C "$SRC" rev-parse --verify -q "$BRANCH" >/dev/null; then
+    git -C "$SRC" worktree add "$PWD/$WT" "$BRANCH"
+  else
+    git -C "$SRC" worktree add -b "$BRANCH" "$PWD/$WT" HEAD
+    for patch in patches/proxy/*.patch; do
+      git -C "$WT" -c user.name="${GIT_AUTHOR_NAME:-nrb}" -c user.email="${GIT_AUTHOR_EMAIL:-nrb@localhost}" am "$PWD/$patch"
+    done
+  fi
+  echo "готово: $WT"
 fi
-echo "готово: $WT"
+
+# --- Servo: servo-net с патчами из patches/servo (WebSocket через прокси) → .nrb-dev/servo-net, подключается через [patch.crates-io].
+SERVO_NET_VERSION="0.7.0"
+SN=".nrb-dev/servo-net"
+if [ ! -d "$SN" ]; then
+  SRC_DIR="$(ls -d "$HOME"/.cargo/registry/src/*/servo-net-"$SERVO_NET_VERSION" 2>/dev/null | head -1 || true)"
+  if [ -z "$SRC_DIR" ]; then
+    echo "servo-net $SERVO_NET_VERSION нет в кэше cargo — скачиваю (cargo fetch)…"
+    ./scripts/fetch-deps.sh
+    SRC_DIR="$(ls -d "$HOME"/.cargo/registry/src/*/servo-net-"$SERVO_NET_VERSION" | head -1)"
+  fi
+  cp -r "$SRC_DIR" "$SN"
+  chmod -R u+w "$SN"
+  for patch in patches/servo/*.patch; do
+    patch -p1 -d "$SN" < "$patch"
+  done
+  echo "готово: $SN (патчи Servo применены)"
+else
+  echo "servo-net уже есть: $SN"
+fi

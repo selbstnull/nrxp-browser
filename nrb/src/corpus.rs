@@ -26,6 +26,7 @@ pub struct Args {
     pub parallel: usize,
     pub timeout: Duration,
     pub proxy: Option<String>,
+    pub node: crate::tunnel::NodeArgs,
     pub no_ratchet: bool,
 }
 
@@ -167,7 +168,7 @@ fn percent(passed: usize, total: usize) -> f64 {
     }
 }
 
-fn run_site(exe: &Path, site: &Site, out: &Path, args: &Args) -> SiteResult {
+fn run_site(exe: &Path, site: &Site, out: &Path, args: &Args, proxy: Option<&str>) -> SiteResult {
     let png = out.join(format!("{}.png", site.id));
     let mut command = Command::new(exe);
     command
@@ -183,8 +184,9 @@ fn run_site(exe: &Path, site: &Site, out: &Path, args: &Args) -> SiteResult {
             fs::File::create(out.join(format!("{}.log", site.id)))
                 .map_or_else(|_| Stdio::null(), Stdio::from),
         );
-    if let Some(proxy) = &args.proxy {
-        command.args(["--proxy", proxy]);
+    // Прокси (с логином/паролем) передаём через окружение, а не через argv: аргументы видны в `ps`.
+    if let Some(proxy) = proxy {
+        command.env("NRB_PROXY_URL", proxy);
     }
     let started = Instant::now();
     let mut result = SiteResult {
@@ -312,6 +314,22 @@ pub fn run(args: Args) -> i32 {
         eprintln!("не удалось создать {}: {error}", out.display());
         return 64;
     }
+    // Один туннель на весь прогон: все дочерние `nrb snap` ходят через общий локальный прокси.
+    let tunnel = if args.node.enabled() {
+        match crate::tunnel::start(&args.node) {
+            Ok(tunnel) => Some(tunnel),
+            Err(error) => {
+                eprintln!("туннель: {error}");
+                return 64;
+            }
+        }
+    } else {
+        None
+    };
+    let proxy_url = tunnel
+        .as_ref()
+        .map(|t| t.proxy_url())
+        .or_else(|| args.proxy.clone());
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(error) => {
@@ -335,7 +353,7 @@ pub fn run(args: Args) -> i32 {
                 loop {
                     let index = next.fetch_add(1, Ordering::SeqCst);
                     let Some(site) = sites.get(index) else { break };
-                    let mut result = run_site(&exe, site, &out, &args);
+                    let mut result = run_site(&exe, site, &out, &args, proxy_url.as_deref());
                     result.known_broken = broken.get(&site.id).cloned();
                     println!(
                         "[{:>2}/{}] {:<16} {:<14} {:>6} ms  {}",

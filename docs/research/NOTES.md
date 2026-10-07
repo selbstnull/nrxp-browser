@@ -99,3 +99,8 @@ QUIC-клиент шлёт Initial ≥ 1200 байт → всегда по TCP-�
 Патч в `patches/proxy/0001-fix-muxer-Connect.patch`.
 Попутно: `NetworkConfig::init_global(mtu)` обязателен до первого подключения (паника «Global NetworkConfig is not initialized»); мы зовём его один раз с MTU 1450 (`init_core` в nrb-transport).
 Кредиты: `NrxpStream` обязан отдавать `RawCastFrame::credit` по мере чтения и слать первый грант (`CreditReceiver::initial_offset()`) сразу после `Connect`; отправлять грант надо отдельной задачей (см. итог I4).
+
+### S1 — итог (2026-10-07)
+HTTP/HTTPS/fetch/XHR/подресурсы/favicon/воркеры — через прокси Servo (проверено `leakwatch`: внешних сокетов нет). **WebSocket** — прямой `TcpStream::connect` в `servo-net/websocket_loader.rs` (+локальный DNS) → патч.
+Сам прокси: только HTTP CONNECT с Basic-auth из URL; SOCKS не поддерживается; `network_http_no_proxy` игнорируется патчем WS.
+Метод проверки на будущее при апгрейде Servo: `scripts/leakwatch.sh` + `tests/fixtures/ws.html` + прогон части корпуса; после апгрейда пересобрать патч (`patches/servo`) — формат файла `websocket_loader.rs` может поменяться.
