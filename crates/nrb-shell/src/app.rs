@@ -14,6 +14,7 @@ use nrb_engine_servo::servo::{
     WebViewBuilder, WebViewDelegate, WebViewId, WebViewPoint, WheelDelta, WheelEvent, WheelMode,
     WindowRenderingContext,
 };
+use nrb_engine_servo::servo::{UserContentManager, UserScript};
 use nrb_engine_servo::{ServoConfig, build_opts, build_preferences, install_crypto_provider};
 use url::Url;
 use winit::application::ApplicationHandler;
@@ -48,6 +49,8 @@ pub struct ShellConfig {
     pub nodes: Option<std::sync::Arc<dyn NodeManager>>,
     /// Блокировщик рекламы; без него (или без правил) запросы не фильтруются.
     pub adblock: Option<std::sync::Arc<nrb_adblock::Blocker>>,
+    /// Готовый JavaScript пользовательских скриптов/стилей (`nrb_userscripts::UserContent::wrap`); внедряется во все вкладки.
+    pub userscripts: Vec<String>,
 }
 
 impl Default for ShellConfig {
@@ -59,6 +62,7 @@ impl Default for ShellConfig {
             tunnel: None,
             nodes: None,
             adblock: None,
+            userscripts: Vec::new(),
         }
     }
 }
@@ -321,6 +325,7 @@ enum App {
 struct Running {
     window: Rc<Window>,
     servo: Servo,
+    user_content: Option<Rc<UserContentManager>>,
     window_ctx: Rc<WindowRenderingContext>,
     content_ctx: Rc<OffscreenRenderingContext>,
     gl: Arc<egui_glow::glow::Context>,
@@ -468,6 +473,14 @@ impl Running {
         if config.servo.devtools_port.is_some() {
             servo.set_delegate(Rc::new(EngineDelegate));
         }
+        // Пользовательские скрипты применяются при загрузке страницы (менеджер общий для всех вкладок).
+        let user_content = (!config.userscripts.is_empty()).then(|| {
+            let manager = Rc::new(UserContentManager::new(&servo));
+            for js in &config.userscripts {
+                manager.add_script(Rc::new(UserScript::new(js.clone(), None)));
+            }
+            manager
+        });
 
         let shared = Rc::new(Shared {
             window: RefCell::new(Some(window.clone())),
@@ -515,6 +528,7 @@ impl Running {
         let mut running = Self {
             window,
             servo,
+            user_content,
             window_ctx,
             content_ctx,
             gl,
@@ -603,11 +617,14 @@ impl Running {
     }
 
     fn build_tab(&self, url: Url) -> WebView {
-        WebViewBuilder::new(&self.servo, self.content_ctx.clone())
+        let mut builder = WebViewBuilder::new(&self.servo, self.content_ctx.clone())
             .url(url)
             .hidpi_scale_factor(euclid_compat::scale(self.shared.scale.get()))
-            .delegate(self.delegate.clone())
-            .build()
+            .delegate(self.delegate.clone());
+        if let Some(manager) = &self.user_content {
+            builder = builder.user_content_manager(manager.clone());
+        }
+        builder.build()
     }
 
     fn open_tab(&mut self, url: Url) {

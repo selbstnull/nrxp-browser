@@ -19,6 +19,7 @@ nrb-net = { path = "../crates/nrb-net" }
 nrb-deploy = { path = "../crates/nrb-deploy" }
 nrb-node = { path = "../crates/nrb-node" }
 nrb-adblock = { path = "../crates/nrb-adblock" }
+nrb-userscripts = { path = "../crates/nrb-userscripts" }
 nrb-transport = { path = "../crates/nrb-transport" }
 tokio.workspace = true
 nrb-engine-servo = { path = "../crates/nrb-engine-servo", optional = true }

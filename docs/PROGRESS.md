@@ -58,3 +58,4 @@
 * 2026-10-08 · I12 (часть) · блокировщик рекламы: `crates/nrb-adblock` (adblock 0.13), хук `load_web_resource` в оболочке, `nrb adblock update/status`, настройка `adblock`, счётчик в тулбаре.
   Доказательство: 6 юнит-тестов; `scripts/gui-adblock.sh` «всё прошло»; `gui-adblock-real.sh`: EasyList+EasyPrivacy (136 348 правил) на cnn.com — страница отрисована, заблокировано 23 запроса. Всего `cargo test --workspace`: 99 тестов, 0 упавших; clippy `-D warnings` с `--features nrb/servo` чист.
   `Cargo.lock`: добавлены только новые крейты (adblock, psl, addr, flatbuffers…) — существующие версии не менялись (+75 строк, без удалений).
+* 2026-10-08 · I12 (часть) · пользовательские скрипты/стили: `crates/nrb-userscripts`, внедрение через `UserContentManager`, каталог `<профиль>/userscripts`. Доказательство: 7 юнит-тестов, `scripts/gui-userscripts.sh` «всё прошло». Найден и закрыт баг заголовка стиля с `*/` в шаблоне.

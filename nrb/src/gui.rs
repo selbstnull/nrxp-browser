@@ -59,6 +59,25 @@ pub fn run(
     };
     let proxy = tunnel.as_ref().map(|t| t.proxy_url()).or(proxy);
     let filters = profile.filters_dir();
+    let userscripts = match profile.userscripts_dir() {
+        Some(dir) => match nrb_userscripts::load_dir(&dir) {
+            Ok(items) => items
+                .iter()
+                .filter_map(|item| {
+                    let js = item.wrap();
+                    if js.is_none() {
+                        eprintln!("{}: нет @match — не запускается нигде", item.name);
+                    }
+                    js
+                })
+                .collect(),
+            Err(error) => {
+                eprintln!("пользовательские скрипты: {error}");
+                Vec::new()
+            }
+        },
+        None => Vec::new(),
+    };
     let config = ShellConfig {
         initial_urls,
         servo: ServoConfig {
@@ -68,6 +87,7 @@ pub fn run(
             devtools_port: devtools,
         },
         search: search.to_owned(),
+        userscripts,
         adblock: filters.map(|dir| match nrb_adblock::Blocker::from_dir(&dir) {
             Ok(blocker) => std::sync::Arc::new(blocker),
             Err(error) => {

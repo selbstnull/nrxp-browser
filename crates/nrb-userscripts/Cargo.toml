@@ -1,0 +1,13 @@
+[package]
+name = "nrb-userscripts"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Пользовательские скрипты и стили (*.user.js, *.user.css): разбор заголовков, шаблоны @match, обёртка для внедрения"
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+regex = "1"

@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>начало</title>
+<h1 id="h">Страница</h1>
+<script>
+  // Итог в заголовок: что сделали пользовательский скрипт (data-us) и пользовательский стиль (цвет заголовка).
+  window.addEventListener('load', function () { setTimeout(function () {
+    document.title = (document.body.dataset.us || 'нет') + '|' + (document.body.dataset.other || 'нет') + '|' + getComputedStyle(document.getElementById('h')).color;
+  }, 500); });
+</script>
