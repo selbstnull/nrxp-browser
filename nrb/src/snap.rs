@@ -18,6 +18,7 @@ pub struct Args {
     /// Печатать машиночитаемый отчёт (одна строка JSON) вместо человекочитаемой строки.
     pub json: bool,
     pub node: crate::tunnel::NodeArgs,
+    pub profile: crate::profile::ProfileArgs,
 }
 
 /// Отчёт `nrb snap --json` (читает `nrb corpus`).
@@ -64,6 +65,8 @@ pub fn run(args: Args) -> i32 {
     let mut engine = match ServoSnapshotter::new(&ServoConfig {
         proxy,
         user_agent: None,
+        profile_dir: args.profile.for_snap(),
+        devtools_port: None,
     }) {
         Ok(engine) => engine,
         Err(error) => {

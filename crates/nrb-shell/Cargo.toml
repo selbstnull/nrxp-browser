@@ -9,6 +9,7 @@ description = "Оболочка браузера: окно, вкладки, ад
 [dependencies]
 nrb-engine = { path = "../nrb-engine" }
 nrb-engine-servo = { path = "../nrb-engine-servo" }
+nrb-profile = { path = "../nrb-profile" }
 anyhow.workspace = true
 tracing.workspace = true
 url.workspace = true

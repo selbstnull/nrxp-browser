@@ -16,6 +16,14 @@ pub struct ToolbarState {
     pub loading: bool,
     /// Индикатор туннеля (текст, жив ли) — справа в строке вкладок.
     pub tunnel: Option<(String, bool)>,
+    /// Текущая страница в закладках (звезда закрашена).
+    pub bookmarked: bool,
+    /// Подсказки адресной строки: `(адрес, заголовок)`.
+    pub suggestions: Vec<(String, String)>,
+    /// Показывается ли список подсказок (пользователь печатает в адресной строке).
+    pub suggest_open: bool,
+    /// Текст в адресной строке изменён пользователем (для пересчёта подсказок).
+    pub input_changed: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -27,6 +35,80 @@ pub enum Action {
     NewTab,
     CloseTab(usize),
     SelectTab(usize),
+    ToggleBookmark,
+    OpenHistory,
+    OpenBookmarks,
+    OpenSettings,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+}
+
+/// Звезда закладки: рисуем сами (в шрифте egui нет «★/☆»).
+fn star(ui: &mut egui::Ui, filled: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+    let center = rect.center();
+    let points: Vec<egui::Pos2> = (0..10)
+        .map(|i| {
+            let angle = std::f32::consts::PI * (i as f32) / 5.0 - std::f32::consts::FRAC_PI_2;
+            let radius = if i % 2 == 0 { 9.0 } else { 4.0 };
+            center + egui::vec2(angle.cos(), angle.sin()) * radius
+        })
+        .collect();
+    let color = if filled {
+        egui::Color32::from_rgb(250, 200, 50)
+    } else {
+        ui.visuals().widgets.inactive.fg_stroke.color
+    };
+    let fill = if filled {
+        color
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        fill,
+        egui::Stroke::new(1.5, color),
+    ));
+    response
+}
+
+/// Список подсказок под адресной строкой (история и закладки). Закрывается по клику мимо.
+fn suggestions_popup(
+    ctx: &egui::Context,
+    url_bar: &egui::Response,
+    state: &mut ToolbarState,
+    actions: &mut Vec<Action>,
+) {
+    if !state.suggest_open || state.suggestions.is_empty() {
+        return;
+    }
+    let area = egui::Area::new(egui::Id::new("url-suggestions"))
+        .fixed_pos(url_bar.rect.left_bottom() + egui::vec2(0.0, 2.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(url_bar.rect.width().max(300.0));
+                for (url, title) in &state.suggestions {
+                    let text = if title.is_empty() {
+                        url.clone()
+                    } else {
+                        format!("{}  —  {url}", short(title, 50))
+                    };
+                    if ui.selectable_label(false, short(&text, 110)).clicked() {
+                        actions.push(Action::Navigate(url.clone()));
+                        state.suggest_open = false;
+                    }
+                }
+            });
+        });
+    let clicked_elsewhere = ctx.input(|i| i.pointer.any_click())
+        && !ctx
+            .input(|i| i.pointer.interact_pos())
+            .is_some_and(|p| area.response.rect.contains(p) || url_bar.rect.contains(p));
+    if clicked_elsewhere {
+        state.suggest_open = false;
+    }
 }
 
 fn short(title: &str, max: usize) -> String {
@@ -108,28 +190,73 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
             {
                 actions.push(Action::Reload);
             }
-            let edit = egui::TextEdit::singleline(&mut state.url_input)
-                .id(egui::Id::new("url-bar"))
-                .hint_text("Введите адрес или запрос")
-                .desired_width(f32::INFINITY);
-            let response = ui.add(edit);
-            if state.focus_url {
-                state.focus_url = false;
-                response.request_focus();
-                if let Some(mut text_state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
-                    let end = state.url_input.chars().count();
-                    text_state
-                        .cursor
-                        .set_char_range(Some(egui::text::CCursorRange::two(
-                            egui::text::CCursor::new(0),
-                            egui::text::CCursor::new(end),
-                        )));
-                    text_state.store(ui.ctx(), response.id);
+            // Правая часть строки (меню, звезда) раскладывается справа налево, адресная строка занимает остаток.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("Меню", |ui| {
+                    if ui.button("Журнал            Ctrl+H").clicked() {
+                        actions.push(Action::OpenHistory);
+                        ui.close();
+                    }
+                    if ui.button("Закладки          Ctrl+Shift+O").clicked() {
+                        actions.push(Action::OpenBookmarks);
+                        ui.close();
+                    }
+                    if ui.button("Настройки         Ctrl+,").clicked() {
+                        actions.push(Action::OpenSettings);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Масштаб +         Ctrl+=").clicked() {
+                        actions.push(Action::ZoomIn);
+                    }
+                    if ui.button("Масштаб −         Ctrl+-").clicked() {
+                        actions.push(Action::ZoomOut);
+                    }
+                    if ui.button("Масштаб 100%      Ctrl+0").clicked() {
+                        actions.push(Action::ZoomReset);
+                        ui.close();
+                    }
+                });
+                if star(ui, state.bookmarked)
+                    .on_hover_text("Добавить в закладки / убрать (Ctrl+D)")
+                    .clicked()
+                {
+                    actions.push(Action::ToggleBookmark);
                 }
-            }
-            if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                actions.push(Action::Navigate(state.url_input.clone()));
-            }
+                let edit = egui::TextEdit::singleline(&mut state.url_input)
+                    .id(egui::Id::new("url-bar"))
+                    .hint_text("Введите адрес или запрос")
+                    .desired_width(ui.available_width());
+                let response = ui.add(edit);
+                if response.changed() {
+                    state.suggest_open = true;
+                    state.input_changed = true;
+                }
+                if state.focus_url {
+                    state.focus_url = false;
+                    response.request_focus();
+                    if let Some(mut text_state) = egui::TextEdit::load_state(ui.ctx(), response.id)
+                    {
+                        let end = state.url_input.chars().count();
+                        text_state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(end),
+                            )));
+                        text_state.store(ui.ctx(), response.id);
+                    }
+                }
+                let enter = ui.input(|input| input.key_pressed(egui::Key::Enter));
+                if response.lost_focus() && enter {
+                    state.suggest_open = false;
+                    actions.push(Action::Navigate(state.url_input.clone()));
+                }
+                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                    state.suggest_open = false;
+                }
+                suggestions_popup(ui.ctx(), &response, state, &mut actions);
+            });
         });
         ui.add_space(2.0);
     });

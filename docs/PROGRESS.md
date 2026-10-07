@@ -41,3 +41,6 @@
 * 2026-10-07 · I5.s · S3 = да (по коду): reverse-egress не требует смены протокола; план правок ядра записан. Прототип запуском — I9.0.
 * 2026-10-07 · I2.1 · модальные окна (`nrb-shell/modal.rs`), фавиконки, IME, fullscreen, русские страницы ошибок (`nrb-engine-servo/resources`, свой ResourceReader).
   Доказательство: `scripts/gui-dialogs.sh` → «всё прошло» (alert/confirm/prompt/select/HTTP-auth), `gui-smoke.sh` → «всё прошло»; скриншоты ошибок в `out/err-*.png`.
+* 2026-10-07 · I6 · `nrb-profile` (история/закладки/сессия/настройки), интеграция в оболочку (звезда, подсказки, окна Журнал/Закладки/Настройки, масштаб), персистентные куки/localStorage/IndexedDB, `--devtools`.
+  Доказательство: `gui-profile.sh` «всё прошло»; `cargo test --workspace` — 52 теста, 0 упавших; gui-smoke, gui-dialogs зелёные. Release-сборка: корпус через туннель 40/57 ok, медиана 1,9 с на сайт (debug 5,9 с); NYT на release не падает.
+  **Замечание:** случайный запуск `nrb --devtools` на реальном дисплее создал профиль по умолчанию `~/.local/share/netrunner-browser/profile` — безвредно, но это каталог пользователя.

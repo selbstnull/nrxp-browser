@@ -23,6 +23,10 @@ pub struct ServoConfig {
     /// `http://127.0.0.1:порт` — прокси для HTTP и HTTPS (CONNECT). Пусто — прямое соединение (I1–I3).
     pub proxy: Option<String>,
     pub user_agent: Option<String>,
+    /// Каталог профиля: куки, localStorage, IndexedDB, HSTS, дисковый кэш. `None` — временные данные (пропадают при выходе).
+    pub profile_dir: Option<std::path::PathBuf>,
+    /// Порт сервера DevTools (слушает только 127.0.0.1). `None` — выключен.
+    pub devtools_port: Option<u16>,
 }
 
 pub use servo;
@@ -35,6 +39,9 @@ pub fn build_preferences(config: &ServoConfig) -> Preferences {
     let mut prefs = Preferences {
         // Самодостаточность: корни webpki зашиты в бинарь, системное хранилище не используется.
         network_use_webpki_roots: true,
+        // Экспериментальные в Servo, но нужные реальным сайтам; влияние на корпус отслеживаем (I13).
+        dom_indexeddb_enabled: true,
+        dom_notification_enabled: true,
         ..Preferences::default()
     };
     if let Some(proxy) = &config.proxy {
@@ -44,7 +51,24 @@ pub fn build_preferences(config: &ServoConfig) -> Preferences {
     if let Some(ua) = &config.user_agent {
         prefs.user_agent = ua.clone();
     }
+    if let Some(port) = config.devtools_port {
+        prefs.devtools_server_enabled = true;
+        prefs.devtools_server_listen_address = format!("127.0.0.1:{port}");
+    }
+    if let Some(dir) = &config.profile_dir {
+        // Дисковый кэш HTTP рядом с остальными данными профиля.
+        prefs.network_http_disk_cache = dir.join("http-cache").to_string_lossy().into_owned();
+    }
     prefs
+}
+
+/// Опции движка: где хранить данные. Без `profile_dir` хранилище временное.
+pub fn build_opts(config: &ServoConfig) -> servo::Opts {
+    servo::Opts {
+        config_dir: config.profile_dir.clone(),
+        temporary_storage: config.profile_dir.is_none(),
+        ..servo::Opts::default()
+    }
 }
 
 /// Установить крипто-провайдер rustls. Servo требует, чтобы процесс сделал это до первой загрузки.
@@ -113,6 +137,7 @@ impl ServoSnapshotter {
         install_crypto_provider();
 
         let servo = ServoBuilder::default()
+            .opts(build_opts(config))
             .preferences(build_preferences(config))
             .event_loop_waker(Box::new(PollWaker(Arc::new(AtomicBool::new(false)))))
             .build();

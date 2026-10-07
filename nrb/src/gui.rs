@@ -1,7 +1,13 @@
 //! Запуск графической оболочки (I2).
 
 #[cfg(not(feature = "servo"))]
-pub fn run(_urls: Vec<String>, _proxy: Option<String>, _node: crate::tunnel::NodeArgs) -> i32 {
+pub fn run(
+    _urls: Vec<String>,
+    _proxy: Option<String>,
+    _node: crate::tunnel::NodeArgs,
+    _profile: crate::profile::ProfileArgs,
+    _devtools: Option<u16>,
+) -> i32 {
     eprintln!(
         "nrb собран без движка: пересоберите с `--features servo` (или используйте `nrb node`)"
     );
@@ -9,7 +15,13 @@ pub fn run(_urls: Vec<String>, _proxy: Option<String>, _node: crate::tunnel::Nod
 }
 
 #[cfg(feature = "servo")]
-pub fn run(urls: Vec<String>, proxy: Option<String>, node: crate::tunnel::NodeArgs) -> i32 {
+pub fn run(
+    urls: Vec<String>,
+    proxy: Option<String>,
+    node: crate::tunnel::NodeArgs,
+    profile: crate::profile::ProfileArgs,
+    devtools: Option<u16>,
+) -> i32 {
     use nrb_engine::omnibox;
     use nrb_engine_servo::ServoConfig;
     use nrb_shell::ShellConfig;
@@ -36,6 +48,8 @@ pub fn run(urls: Vec<String>, proxy: Option<String>, node: crate::tunnel::NodeAr
         servo: ServoConfig {
             proxy,
             user_agent: None,
+            profile_dir: profile.for_window(),
+            devtools_port: devtools,
         },
         search: search.to_owned(),
         tunnel: tunnel

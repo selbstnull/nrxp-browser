@@ -5,14 +5,15 @@ use std::sync::Arc;
 use dpi::PhysicalSize;
 use nrb_engine::omnibox;
 use nrb_engine_servo::servo::{
-    AuthenticationRequest, CompositionEvent, CompositionState, CreateNewWebViewRequest, Cursor,
-    DeviceIntRect, DevicePoint, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent,
-    InputEvent, KeyboardEvent as ServoKeyboardEvent, LoadStatus, MouseButton, MouseButtonAction,
-    MouseButtonEvent, MouseMoveEvent, OffscreenRenderingContext, PermissionRequest, PixelFormat,
-    RenderingContext, Servo, ServoBuilder, SimpleDialog, WebView, WebViewBuilder, WebViewDelegate,
-    WebViewId, WebViewPoint, WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
+    AllowOrDenyRequest, AuthenticationRequest, CompositionEvent, CompositionState,
+    CreateNewWebViewRequest, Cursor, DeviceIntRect, DevicePoint, EmbedderControl,
+    EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent, KeyboardEvent as ServoKeyboardEvent,
+    LoadStatus, MouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
+    OffscreenRenderingContext, PermissionRequest, PixelFormat, RenderingContext, Servo,
+    ServoBuilder, ServoDelegate, SimpleDialog, WebView, WebViewBuilder, WebViewDelegate, WebViewId,
+    WebViewPoint, WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
 };
-use nrb_engine_servo::{ServoConfig, build_preferences, install_crypto_provider};
+use nrb_engine_servo::{ServoConfig, build_opts, build_preferences, install_crypto_provider};
 use url::Url;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
@@ -23,6 +24,7 @@ use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::keys;
+use crate::library::{Library, LibraryAction, Panel};
 use crate::modal::{self, Modal};
 use crate::ui::{self, Action, TabInfo, ToolbarState};
 
@@ -93,6 +95,9 @@ struct Shared {
     hidden_controls: RefCell<Vec<EmbedderControlId>>,
     fullscreen: Cell<Option<bool>>,
     favicons: RefCell<Vec<WebViewId>>,
+    /// Страницы, дозагрузившиеся до `Complete` (для журнала), и сменившиеся заголовки.
+    completed: RefCell<Vec<WebViewId>>,
+    titled: RefCell<Vec<WebViewId>>,
 }
 
 /// Адрес источника для подписи окон: `https://host`; для страниц без хоста — полный URL.
@@ -125,11 +130,15 @@ impl WebViewDelegate for Delegate {
         self.0.redraw();
     }
 
-    fn notify_page_title_changed(&self, _webview: WebView, _title: Option<String>) {
+    fn notify_page_title_changed(&self, webview: WebView, _title: Option<String>) {
+        self.0.titled.borrow_mut().push(webview.id());
         self.0.redraw();
     }
 
-    fn notify_load_status_changed(&self, _webview: WebView, _status: LoadStatus) {
+    fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
+        if status == LoadStatus::Complete {
+            self.0.completed.borrow_mut().push(webview.id());
+        }
         self.0.redraw();
     }
 
@@ -254,6 +263,20 @@ impl WebViewDelegate for Delegate {
     }
 }
 
+/// Делегат самого Servo: сервер DevTools (включается флагом `--devtools`, слушает только loopback).
+struct EngineDelegate;
+
+impl ServoDelegate for EngineDelegate {
+    fn notify_devtools_server_started(&self, port: u16, token: String) {
+        eprintln!("DevTools: 127.0.0.1:{port} (токен для подключения без запроса: {token})");
+    }
+
+    fn request_devtools_connection(&self, request: AllowOrDenyRequest) {
+        // Сервер включён пользователем явно и доступен только с этого компьютера.
+        request.allow();
+    }
+}
+
 enum App {
     Initial {
         proxy: EventLoopProxy<WakerEvent>,
@@ -288,6 +311,14 @@ struct Running {
     /// Окно в полноэкранном режиме (F11 или запрос страницы): тулбар скрыт.
     fullscreen: bool,
     favicons: std::collections::HashMap<WebViewId, egui::TextureHandle>,
+    store: nrb_profile::Store,
+    settings: nrb_profile::Settings,
+    profile_dir: Option<std::path::PathBuf>,
+    library: Library,
+    /// Последняя сохранённая сессия и время сохранения (дебаунс).
+    saved_session: (nrb_profile::SessionState, std::time::Instant),
+    /// Кэш «текущая страница в закладках» по адресу.
+    bookmark_cache: (String, bool),
 }
 
 impl ApplicationHandler<WakerEvent> for App {
@@ -395,9 +426,13 @@ impl Running {
         let content_ctx = Rc::new(window_ctx.offscreen_context(content_size));
 
         let servo = ServoBuilder::default()
+            .opts(build_opts(&config.servo))
             .preferences(build_preferences(&config.servo))
             .event_loop_waker(Box::new(Waker(proxy)))
             .build();
+        if config.servo.devtools_port.is_some() {
+            servo.set_delegate(Rc::new(EngineDelegate));
+        }
 
         let shared = Rc::new(Shared {
             window: RefCell::new(Some(window.clone())),
@@ -410,8 +445,33 @@ impl Running {
             hidden_controls: RefCell::default(),
             fullscreen: Cell::new(None),
             favicons: RefCell::default(),
+            completed: RefCell::default(),
+            titled: RefCell::default(),
         });
         let delegate = Rc::new(Delegate(shared.clone()));
+
+        let profile_dir = config.servo.profile_dir.clone();
+        let (store, settings) = match &profile_dir {
+            Some(dir) => {
+                let store = nrb_profile::Store::open(dir).or_else(|error| {
+                    tracing::warn!(%error, "не удалось открыть базу профиля — работаем без сохранения");
+                    nrb_profile::Store::in_memory()
+                })?;
+                let settings = nrb_profile::Settings::load(dir).unwrap_or_else(|error| {
+                    tracing::warn!(%error, "настройки не прочитаны — значения по умолчанию");
+                    nrb_profile::Settings::default()
+                });
+                (store, settings)
+            }
+            None => (
+                nrb_profile::Store::in_memory()?,
+                nrb_profile::Settings::default(),
+            ),
+        };
+        egui_ctx.set_visuals(match settings.theme {
+            nrb_profile::Theme::Dark => egui::Visuals::dark(),
+            nrb_profile::Theme::Light => egui::Visuals::light(),
+        });
 
         let mut running = Self {
             window,
@@ -433,23 +493,55 @@ impl Running {
                 can_forward: false,
                 loading: false,
                 tunnel: None,
+                bookmarked: false,
+                suggestions: Vec::new(),
+                suggest_open: false,
+                input_changed: false,
             },
             toolbar_px,
             cursor: PhysicalPosition::new(0.0, 0.0),
             modifiers: ModifiersState::empty(),
-            search: config.search,
+            search: settings.search.clone(),
             exit: false,
             tunnel: config.tunnel,
             next_badge_refresh: std::time::Instant::now(),
             modals: Default::default(),
             fullscreen: false,
             favicons: Default::default(),
+            store,
+            settings,
+            profile_dir,
+            library: Library::default(),
+            saved_session: (
+                nrb_profile::SessionState::default(),
+                std::time::Instant::now(),
+            ),
+            bookmark_cache: (String::new(), false),
         };
         running.window.set_ime_allowed(true);
 
+        let _ = &config.search; // шаблон поиска теперь из настроек профиля
         if config.initial_urls.is_empty() {
-            running.open_tab(Url::parse("about:blank")?);
-            running.toolbar.focus_url = true;
+            let session = if running.settings.restore_session && running.profile_dir.is_some() {
+                running.store.load_session()
+            } else {
+                nrb_profile::SessionState::default()
+            };
+            if session.tabs.is_empty() {
+                let home = running.settings.homepage.clone();
+                let start = Url::parse(&home)
+                    .unwrap_or_else(|_| Url::parse("about:blank").expect("валидный URL"));
+                let blank = start.as_str() == "about:blank";
+                running.open_tab(start);
+                running.toolbar.focus_url = blank;
+            } else {
+                for tab in &session.tabs {
+                    if let Ok(url) = Url::parse(&tab.url) {
+                        running.open_tab(url);
+                    }
+                }
+                running.select_tab(session.active.min(running.tabs.len().saturating_sub(1)));
+            }
         } else {
             for url in config.initial_urls {
                 running.open_tab(url);
@@ -478,6 +570,9 @@ impl Running {
 
     fn open_tab(&mut self, url: Url) {
         let webview = self.build_tab(url);
+        if (self.settings.default_zoom - 1.0).abs() > f32::EPSILON {
+            webview.set_page_zoom(self.settings.default_zoom);
+        }
         self.tabs.push(webview);
         self.select_tab(self.tabs.len() - 1);
     }
@@ -564,12 +659,134 @@ impl Running {
         for id in favicons {
             self.update_favicon(id);
         }
+        self.record_history();
+        self.save_session(false);
         let closed: Vec<WebView> = self.shared.closed.borrow_mut().drain(..).collect();
         for webview in closed {
             if let Some(index) = self.tabs.iter().position(|tab| tab.id() == webview.id()) {
                 self.close_tab(index);
             }
         }
+    }
+
+    /// Журнал: посещения дозагрузившихся страниц и обновление заголовков.
+    fn record_history(&mut self) {
+        let completed: Vec<WebViewId> = self.shared.completed.borrow_mut().drain(..).collect();
+        let titled: Vec<WebViewId> = self.shared.titled.borrow_mut().drain(..).collect();
+        if !self.settings.record_history || self.profile_dir.is_none() {
+            return;
+        }
+        for id in completed {
+            if let Some(tab) = self.tabs.iter().find(|tab| tab.id() == id)
+                && let Some(url) = tab.url()
+            {
+                let title = tab.page_title().unwrap_or_default();
+                let _ = self.store.record_visit(url.as_str(), &title);
+            }
+        }
+        for id in titled {
+            if let Some(tab) = self.tabs.iter().find(|tab| tab.id() == id)
+                && let (Some(url), Some(title)) = (tab.url(), tab.page_title())
+            {
+                let _ = self.store.update_title(url.as_str(), &title);
+            }
+        }
+    }
+
+    /// Сессия вкладок на диск: не чаще раза в секунду и только при изменении; `force` — при выходе.
+    fn save_session(&mut self, force: bool) {
+        if self.profile_dir.is_none() {
+            return;
+        }
+        let session = nrb_profile::SessionState {
+            tabs: self
+                .tabs
+                .iter()
+                .filter_map(|tab| {
+                    tab.url().map(|url| nrb_profile::TabState {
+                        url: url.to_string(),
+                        title: tab.page_title().unwrap_or_default(),
+                    })
+                })
+                .collect(),
+            active: self.active,
+        };
+        if session == self.saved_session.0
+            || (!force && self.saved_session.1.elapsed() < std::time::Duration::from_secs(1))
+        {
+            return;
+        }
+        if let Err(error) = self.store.save_session(&session) {
+            tracing::warn!(%error, "не удалось сохранить сессию");
+        }
+        self.saved_session = (session, std::time::Instant::now());
+    }
+
+    /// Подсказки адресной строки: закладки и история по введённому тексту (не более 6).
+    fn refresh_suggestions(&mut self) {
+        let query = self.toolbar.url_input.trim().to_owned();
+        let current = self
+            .active_tab()
+            .and_then(|t| t.url())
+            .map(|u| u.to_string())
+            .unwrap_or_default();
+        self.toolbar.suggestions.clear();
+        if query.is_empty() || query == current || self.profile_dir.is_none() {
+            return;
+        }
+        let needle = query.to_lowercase();
+        let mut seen = std::collections::HashSet::new();
+        if let Ok(bookmarks) = self.store.bookmarks() {
+            for bookmark in bookmarks {
+                if (bookmark.url.to_lowercase().contains(&needle)
+                    || bookmark.title.to_lowercase().contains(&needle))
+                    && seen.insert(bookmark.url.clone())
+                {
+                    self.toolbar
+                        .suggestions
+                        .push((bookmark.url, bookmark.title));
+                }
+            }
+        }
+        if let Ok(entries) = self.store.search_history(&query, 6) {
+            for entry in entries {
+                if seen.insert(entry.url.clone()) {
+                    self.toolbar.suggestions.push((entry.url, entry.title));
+                }
+            }
+        }
+        self.toolbar.suggestions.truncate(6);
+    }
+
+    fn apply_settings(&mut self) {
+        self.search = self.settings.search.clone();
+        self.egui_ctx.set_visuals(match self.settings.theme {
+            nrb_profile::Theme::Dark => egui::Visuals::dark(),
+            nrb_profile::Theme::Light => egui::Visuals::light(),
+        });
+        if let Some(dir) = &self.profile_dir
+            && let Err(error) = self.settings.save(dir)
+        {
+            tracing::warn!(%error, "не удалось сохранить настройки");
+        }
+    }
+
+    fn zoom(&self, change: impl Fn(f32) -> f32) {
+        if let Some(tab) = self.active_tab() {
+            tab.set_page_zoom(change(tab.page_zoom()).clamp(0.3, 5.0));
+        }
+    }
+
+    fn toggle_bookmark(&mut self) {
+        let Some(tab) = self.active_tab() else { return };
+        let Some(url) = tab.url() else { return };
+        let title = tab.page_title().unwrap_or_default();
+        if self.profile_dir.is_none() {
+            return; // приватный сеанс: закладки не сохраняются
+        }
+        let _ = self.store.toggle_bookmark(url.as_str(), &title);
+        self.bookmark_cache.0.clear(); // пересчитать звезду
+        self.window.request_redraw();
     }
 
     fn set_fullscreen(&mut self, fullscreen: bool) {
@@ -641,6 +858,16 @@ impl Running {
             }
             Action::CloseTab(index) => self.close_tab(index),
             Action::SelectTab(index) => self.select_tab(index),
+            Action::ToggleBookmark => self.toggle_bookmark(),
+            Action::OpenHistory => self.library.toggle(Panel::History),
+            Action::OpenBookmarks => self.library.toggle(Panel::Bookmarks),
+            Action::OpenSettings => self.library.toggle(Panel::Settings),
+            Action::ZoomIn => self.zoom(|z| z * 1.1),
+            Action::ZoomOut => self.zoom(|z| z / 1.1),
+            Action::ZoomReset => {
+                let default = self.settings.default_zoom;
+                self.zoom(|_| default);
+            }
         }
     }
 
@@ -677,6 +904,13 @@ impl Running {
                 };
                 self.select_tab(next);
             }
+            _ if ctrl && character == "d" => self.apply(Action::ToggleBookmark),
+            _ if ctrl && character == "h" => self.apply(Action::OpenHistory),
+            _ if ctrl && shift && character == "o" => self.apply(Action::OpenBookmarks),
+            _ if ctrl && character == "," => self.apply(Action::OpenSettings),
+            _ if ctrl && (character == "=" || character == "+") => self.apply(Action::ZoomIn),
+            _ if ctrl && (character == "-" || character == "_") => self.apply(Action::ZoomOut),
+            _ if ctrl && character == "0" => self.apply(Action::ZoomReset),
             _ if ctrl && character == "t" => self.apply(Action::NewTab),
             _ if ctrl && character == "w" => self.apply(Action::CloseTab(self.active)),
             _ if ctrl && character == "l" => self.toolbar.focus_url = true,
@@ -689,7 +923,9 @@ impl Running {
 
     /// Курсор над страницей и под ним нет модального окна (пока окно открыто, страница ввода не получает).
     fn over_content(&self) -> bool {
-        self.modals.is_empty() && self.cursor.y >= f64::from(self.toolbar_px)
+        self.modals.is_empty()
+            && !self.egui_ctx.egui_wants_pointer_input()
+            && self.cursor.y >= f64::from(self.toolbar_px)
     }
 
     fn content_point(&self) -> WebViewPoint {
@@ -716,7 +952,10 @@ impl Running {
         }
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.save_session(true);
+                event_loop.exit();
+            }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::Resized(size) => {
                 self.window_ctx.resize(size);
@@ -861,6 +1100,21 @@ impl Running {
         let scale = self.window.scale_factor() as f32;
 
         self.toolbar.tunnel = self.tunnel.as_ref().map(|t| (t.summary(), t.up()));
+        let current_url = self
+            .active_tab()
+            .and_then(|t| t.url())
+            .map(|u| u.to_string())
+            .unwrap_or_default();
+        if self.bookmark_cache.0 != current_url {
+            let marked = self.profile_dir.is_some()
+                && self.store.is_bookmarked(&current_url).unwrap_or(false);
+            self.bookmark_cache = (current_url, marked);
+        }
+        self.toolbar.bookmarked = self.bookmark_cache.1;
+        if self.toolbar.input_changed {
+            self.toolbar.input_changed = false;
+            self.refresh_suggestions();
+        }
 
         // Состояние тулбара из активной вкладки.
         self.sync_url_bar(false);
@@ -917,15 +1171,23 @@ impl Running {
         let toolbar = &mut self.toolbar;
         let fullscreen = self.fullscreen;
         let mut modal_done = false;
+        let mut library_actions = Vec::new();
         let mut output = self.egui_ctx.clone().run_ui(raw_input, |ui| {
             if !fullscreen {
                 actions = ui::toolbar(ui, &tabs, toolbar);
                 content_top = ui.available_rect_before_wrap().top();
             }
+            library_actions = self.library.show(ui.ctx(), &self.store, &mut self.settings);
             if let Some((_, modal)) = self.modals.front_mut() {
                 modal_done = modal::show(ui.ctx(), modal);
             }
         });
+        for action in library_actions {
+            match action {
+                LibraryAction::Open(url) => self.navigate(&url),
+                LibraryAction::SettingsChanged => self.apply_settings(),
+            }
+        }
         if modal_done {
             self.modals.pop_front();
             self.window.request_redraw();

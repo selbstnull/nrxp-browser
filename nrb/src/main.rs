@@ -8,6 +8,7 @@ use url::Url;
 mod corpus;
 mod fetch;
 mod gui;
+mod profile;
 mod snap;
 mod tunnel;
 
@@ -28,6 +29,11 @@ struct Cli {
     proxy: Option<String>,
     #[command(flatten)]
     node: tunnel::NodeArgs,
+    #[command(flatten)]
+    profile: profile::ProfileArgs,
+    /// Включить сервер DevTools Servo на 127.0.0.1:ПОРТ (подключение — из Firefox → about:debugging).
+    #[arg(long, value_name = "ПОРТ")]
+    devtools: Option<u16>,
 }
 
 #[derive(Subcommand)]
@@ -55,6 +61,8 @@ enum Command {
         json: bool,
         #[command(flatten)]
         node: tunnel::NodeArgs,
+        #[command(flatten)]
+        profile: profile::ProfileArgs,
     },
     /// Прогнать корпус сайтов (по одному процессу `nrb snap` на сайт) и собрать отчёт совместимости.
     Corpus {
@@ -132,6 +140,7 @@ fn main() {
             proxy,
             json,
             node,
+            profile,
         }) => snap::run(snap::Args {
             url,
             output,
@@ -141,6 +150,7 @@ fn main() {
             proxy,
             json,
             node,
+            profile,
         }),
         Some(Command::Corpus {
             sites,
@@ -188,7 +198,7 @@ fn main() {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));
             0
         }
-        None => gui::run(cli.urls, cli.proxy, cli.node),
+        None => gui::run(cli.urls, cli.proxy, cli.node, cli.profile, cli.devtools),
     };
     std::process::exit(code);
 }

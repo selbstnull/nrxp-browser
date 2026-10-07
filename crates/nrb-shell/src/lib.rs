@@ -5,6 +5,7 @@
 
 mod app;
 mod keys;
+mod library;
 mod modal;
 mod ui;
 
