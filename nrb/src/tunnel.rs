@@ -38,6 +38,13 @@ pub struct Tunnel {
 
 pub fn start(args: &NodeArgs) -> Result<Tunnel, String> {
     let config = match (&args.node, &args.node_addr) {
+        // `--node 'nrxp://…'` — приглашение прямо в аргументе (без предварительного `nrb pair`). В сообщениях об ошибках
+        // саму ссылку не печатаем: в ней секреты узла и токен устройства.
+        (Some(link), _) if link.to_string_lossy().starts_with("nrxp://") => {
+            nrb_node::Invite::parse(&link.to_string_lossy())
+                .map_err(|e| format!("приглашение: {e}"))?
+                .to_node_config()
+        }
         (Some(path), _) => {
             NodeConfig::from_toml_file(path).map_err(|e| format!("{}: {e}", path.display()))?
         }

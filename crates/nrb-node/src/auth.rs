@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use netrunner_core::net::{AuthValidator, NodeHealthReport, UsageDelta, UsageReport, UserQuota};
@@ -35,8 +35,8 @@ struct Registry {
 
 struct Cache {
     registry: Registry,
-    mtime: Option<SystemTime>,
-    checked: Instant,
+    /// Отпечаток файла на момент чтения: время изменения и размер (одно время изменения на быстрой перезаписи могло бы совпасть).
+    stamp: Option<(SystemTime, u64)>,
 }
 
 pub struct DeviceStore {
@@ -71,29 +71,26 @@ impl DeviceStore {
             path,
             cache: Mutex::new(Cache {
                 registry: Registry::default(),
-                mtime: None,
-                checked: Instant::now(),
+                stamp: None,
             }),
         };
         store.reload(true)?;
         Ok(store)
     }
 
-    fn mtime(&self) -> Option<SystemTime> {
+    fn stamp(&self) -> Option<(SystemTime, u64)> {
         std::fs::metadata(&self.path)
-            .and_then(|m| m.modified())
+            .and_then(|m| Ok((m.modified()?, m.len())))
             .ok()
     }
 
-    /// Перечитывает файл, если он изменился (проверка не чаще раза в секунду); `force` — безусловно.
+    /// Перечитывает файл, если он изменился; `force` — безусловно. Проверка (`stat`) дешёвая и идёт на каждой валидации:
+    /// иначе токен только что выданного приглашения мог отвергаться по устаревшему кэшу (гонка, найденная `node-e2e.sh`:
+    /// обход отзыва каждые 2 с сбрасывал таймер перечтения, и подключение сразу после `invite` видело пустой реестр).
     fn reload(&self, force: bool) -> Result<()> {
         let mut cache = self.cache.lock().expect("mutex реестра");
-        if !force && cache.checked.elapsed() < std::time::Duration::from_secs(1) {
-            return Ok(());
-        }
-        cache.checked = Instant::now();
-        let mtime = self.mtime();
-        if !force && mtime == cache.mtime {
+        let stamp = self.stamp();
+        if !force && stamp == cache.stamp {
             return Ok(());
         }
         cache.registry = match std::fs::read_to_string(&self.path) {
@@ -102,7 +99,7 @@ impl DeviceStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Registry::default(),
             Err(e) => return Err(e.into()),
         };
-        cache.mtime = mtime;
+        cache.stamp = stamp;
         Ok(())
     }
 
@@ -111,7 +108,7 @@ impl DeviceStore {
             serde_json::to_string_pretty(registry).map_err(|e| Error::Format(e.to_string()))?;
         write_private(&self.path, &text)?;
         let mut cache = self.cache.lock().expect("mutex реестра");
-        cache.mtime = self.mtime();
+        cache.stamp = self.stamp();
         Ok(())
     }
 
@@ -330,14 +327,24 @@ mod tests {
         let running = DeviceStore::open(dir.path()).unwrap(); // как «работающий узел»
         let cli = DeviceStore::open(dir.path()).unwrap(); // как `nrb node invite` в другом процессе
         let (_, token) = cli.add_device("планшет").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(1100)); // интервал перепроверки файла — 1 с
         assert!(
             running.find_by_token(&token).is_some(),
-            "узел видит новое устройство без перезапуска"
+            "узел видит новое устройство сразу, без перезапуска и без задержки"
         );
         cli.revoke("планшет").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(1100));
         assert!(running.find_by_token(&token).is_none(), "и отзыв тоже");
+    }
+
+    /// Регрессия гонки из `node-e2e.sh`: обход отзыва только что прошёл (кэш «свежий»), и сразу после этого выдано приглашение —
+    /// токен должен приниматься немедленно, а не через секунду.
+    #[test]
+    fn invite_issued_right_after_a_sweep_is_accepted_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let running = DeviceStore::open(dir.path()).unwrap();
+        assert!(running.revoked_ids().is_empty()); // обход отзыва
+        let cli = DeviceStore::open(dir.path()).unwrap();
+        let (_, token) = cli.add_device("сразу").unwrap();
+        assert!(running.find_by_token(&token).is_some());
     }
 
     #[tokio::test]

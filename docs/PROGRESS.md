@@ -11,7 +11,7 @@
 
 | Что нужно от соседнего репо | Этап | Статус |
 |---|---|---|
-| Вынести серверный код в lib (`netrunner-server-lib`) | I7 | не начато |
+| ~~Вынести серверный код в lib~~ | I7 | **не понадобилось** — ingress на публичном API ядра |
 | Reverse-регистрация egress в ядре | I9 | не начато |
 | **Патч `Connect` — надёжная доставка** (`patches/proxy/0001-fix-muxer-Connect.patch`, ветка `nrb/connect-reliable`, коммит 90c992c в worktree `.nrb-dev/netrunner-proxy`) | I4 | **сделано локально, не запушено**; предложить владельцу влить в `netrunner-proxy` (баг затрагивает и приложение: потеря Connect при всплеске новых соединений) |
 | **Патч Servo** `patches/servo/0001-websocket-via-proxy.patch` (WebSocket через прокси), вендоринг `servo-net` в `.nrb-dev/servo-net` | I5 | сделано; это патч к стороннему проекту — предложить апстриму (servo/servo) после проверки |
@@ -44,3 +44,6 @@
 * 2026-10-07 · I6 · `nrb-profile` (история/закладки/сессия/настройки), интеграция в оболочку (звезда, подсказки, окна Журнал/Закладки/Настройки, масштаб), персистентные куки/localStorage/IndexedDB, `--devtools`.
   Доказательство: `gui-profile.sh` «всё прошло»; `cargo test --workspace` — 52 теста, 0 упавших; gui-smoke, gui-dialogs зелёные. Release-сборка: корпус через туннель 40/57 ok, медиана 1,9 с на сайт (debug 5,9 с); NYT на release не падает.
   **Замечание:** случайный запуск `nrb --devtools` на реальном дисплее создал профиль по умолчанию `~/.local/share/netrunner-browser/profile` — безвредно, но это каталог пользователя.
+* 2026-10-07 · I7 · `nrb-node` (NodeFile, DeviceStore/LocalAuth, Invite, run_ingress), CLI `nrb node …`/`nrb pair`. Доказательство: `node-e2e.sh` «всё прошло» ×3, 15 тестов узла;
+  decoy: `openssl s_client` → `CN = www.debian.org`; `snap` через свой узел → ok. Исправлены гонка реестра устройств и печать ссылки с секретами в ошибке.
+* 2026-10-07 · публикация: «Initial commit» (`0abe1c5`, дерево на момент WIP I7) запушен в GitHub `nineAp/nrxp-browser` и Gitea `nineap/nrxp-browser` (ветка `main`). Последующие коммиты — только локально, пока владелец не попросит.

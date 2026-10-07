@@ -20,7 +20,7 @@
 | Весь трафик движка через NRXP без TUN/root (локальный HTTP-CONNECT прокси + `NrxpTransport`) | работает на dev-узле; утечек в обход туннеля при проверенных сценариях не найдено (WebSocket в Servo обходил прокси — исправлено патчем Servo) |
 | Диалоги страницы, `<select>`, контекстное меню, HTTP-авторизация, русские страницы ошибок | работает (GUI-сценарии в Xephyr) |
 | Профиль: куки/localStorage/IndexedDB, история, закладки, восстановление вкладок, настройки | работает |
-| Собственный узел: `nrb node init/run/invite/devices/revoke`, `nrb pair` (без бэкенда) | **в разработке**: ядро и тесты есть, сквозной скрипт `scripts/node-e2e.sh` ещё имеет один падающий шаг |
+| Собственный узел: `nrb node init/run/invite/devices/revoke`, `nrb pair` (без бэкенда) | работает на loopback (тесты + `scripts/node-e2e.sh`: спаривание, отзыв, decoy, `snap` через свой узел); не проверено на реальном VPS, нет GUI-менеджера и musl-сборки |
 | Деплой узла на VPS по SSH (`nrb deploy`) | не начато |
 | Reverse-egress (домашний браузер за NAT как выход) | не начато (спайк по коду: реализуемо) |
 | HTTP/3 поверх NRXP | не начато; в ядре потолок датаграммы 1150 B < 1200 B у QUIC — нужна правка ядра |
@@ -52,7 +52,7 @@ nrb snap https://example.org -o out.png       # headless-скриншот
 nrb --node-addr 127.0.0.1:18443 <url>         # через узел NRXP (dev-узел: scripts/dev-node.sh)
 nrb fetch https://example.org --node-addr …   # загрузка через NRXP без движка
 nrb corpus --node-addr …                      # прогон корпуса из 57 сайтов, отчёт в out/corpus/
-nrb node init --public-host 1.2.3.4 --port 443 && nrb node invite телефон && nrb node run   # свой узел (в разработке)
+nrb node init --public-host 1.2.3.4 --port 443 && nrb node invite телефон && nrb node run   # свой узел
 ```
 
 ## Проверки
@@ -63,7 +63,7 @@ scripts/gui-smoke.sh                          # GUI-сценарии в влож
 scripts/gui-dialogs.sh
 scripts/gui-profile.sh
 scripts/leakwatch.sh /tmp/stop > leaks.txt &  # наблюдатель за прямыми соединениями процесса nrb
-scripts/node-e2e.sh                           # сквозная проверка своего узла (в разработке)
+scripts/node-e2e.sh                           # сквозная проверка своего узла (loopback)
 ```
 
 ## Устройство
