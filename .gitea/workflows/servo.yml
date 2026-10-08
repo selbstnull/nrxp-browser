@@ -1,0 +1,39 @@
+# Сборка с движком, самопроверки и релизные артефакты (I14). НЕ проверялась на раннере Gitea.
+# Тяжёлая джоба (Servo release: десятки минут, ~10 ГБ): запускается вручную или по тегу, а не на каждый push.
+name: servo
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: netrunner-browser
+      - name: ядро NRXP рядом
+        run: git clone --depth 1 "https://oauth2:${{ secrets.PROXY_REPO_TOKEN }}@gitea.netrunner-vpn.com/nineap/netrunner-proxy.git" netrunner-proxy
+      - name: системные пакеты
+        run: sudo apt-get update && sudo apt-get install -y clang cmake pkg-config libfontconfig1-dev libxcb1-dev libx11-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev libwayland-dev dpkg-dev
+      - name: подготовка
+        working-directory: netrunner-browser
+        run: scripts/setup-upstream.sh && scripts/check-env.sh
+      - name: release с движком
+        working-directory: netrunner-browser
+        run: CARGO_TARGET_DIR=target-release cargo build --release -p nrb --features servo
+      - name: самопроверка герметичного режима и e2e узла (без GUI)
+        working-directory: netrunner-browser
+        run: |
+          NRB=target-release/release/nrb scripts/node-e2e.sh target-release/release/nrb
+          scripts/egress-e2e.sh target-release/release/nrb
+          scripts/hermetic-e2e.sh target-release/release/nrb
+      - name: пакеты
+        working-directory: netrunner-browser
+        run: scripts/package.sh
+      - uses: actions/upload-artifact@v3
+        with:
+          name: nrb-packages
+          path: netrunner-browser/dist/*

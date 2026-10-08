@@ -1,0 +1,37 @@
+# CI проекта (I14). ВНИМАНИЕ: файл написан, но на раннере Gitea НЕ проверялся (раннера у автора не было под рукой).
+# У раннера всего 2 слота: зависшая джоба блокирует все репозитории, поэтому у КАЖДОЙ джобы обязателен `timeout-minutes`.
+# Нужен секрет PROXY_REPO_TOKEN — токен с правом чтения репозитория netrunner-proxy (ядро NRXP лежит рядом: ../netrunner-proxy).
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    # Без Servo: форматирование, clippy и тесты крейтов без движка. Сборка Servo — отдельная ручная джоба (servo.yml).
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: netrunner-browser
+      - name: ядро NRXP рядом (../netrunner-proxy)
+        run: |
+          git clone --depth 1 "https://oauth2:${{ secrets.PROXY_REPO_TOKEN }}@gitea.netrunner-vpn.com/nineap/netrunner-proxy.git" netrunner-proxy
+      - name: Rust
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
+      - name: подготовка (.nrb-dev: ядро с патчами и servo-net)
+        working-directory: netrunner-browser
+        run: scripts/setup-upstream.sh
+      - name: fmt
+        working-directory: netrunner-browser
+        run: cargo fmt -p nrb -p nrb-node -p nrb-transport -p nrb-net -p nrb-profile -p nrb-deploy -p nrb-adblock -p nrb-userscripts -p nrb-hermetic -- --check
+      - name: clippy
+        working-directory: netrunner-browser
+        run: cargo clippy -p nrb-node -p nrb-transport -p nrb-net -p nrb-profile -p nrb-deploy -p nrb-adblock -p nrb-userscripts -p nrb-hermetic --all-targets -- -D warnings
+      - name: тесты
+        working-directory: netrunner-browser
+        run: cargo test -p nrb-node -p nrb-transport -p nrb-net -p nrb-profile -p nrb-deploy -p nrb-adblock -p nrb-userscripts -p nrb-hermetic
