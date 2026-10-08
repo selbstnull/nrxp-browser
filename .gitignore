@@ -6,3 +6,6 @@
 *.swp
 /target-release
 /bottles
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
