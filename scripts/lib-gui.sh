@@ -40,6 +40,15 @@ check() { # описание, подстрока заголовка
   if [[ "$t" == *"$2"* ]]; then echo "ok   $1 ($t)"; else echo "FAIL $1: ожидалось «$2», заголовок «$t»"; fail=1; fi
 }
 
+# check_wait <описание> <подстрока> [секунд] — как check, но ждёт нужного заголовка (на загруженной машине ввод доходит с задержкой).
+check_wait() {
+  local limit="${3:-8}" t=""
+  for _ in $(seq 1 $((limit * 4))); do
+    t=$(title); [[ "$t" == *"$2"* ]] && break; sleep 0.25
+  done
+  check "$1" "$2"
+}
+
 click() { xdotool mousemove --window "$WID" "$1" "$2"; sleep 0.25; xdotool click 1; }
 shot() { import -window "$WID" "$OUT/$1.png"; }
 

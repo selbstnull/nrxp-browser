@@ -410,7 +410,15 @@ S5 — **частично, и вывод неприятный:** `MAX_DATAGRAM_L
 **Не сделано (блокировщик):** косметические правила (на cnn.com остался пустой блок под рекламу), скриптлеты, `redirect`-ресурсы (запрос просто обрывается), блокировка в режиме I (`nrb-net`) и для service workers (`ServoDelegate::load_web_resource`), счётчик по вкладкам (сейчас общий), автообновление списков, userscripts/userstyles, WebExtensions-спайк. Замеров влияния на скорость загрузки страниц нет.
 
 ### I13 — Полнота веб-платформы
-Статус: todo | Зависит от: I3
+Статус: частично (2026-10-08): включены недостающие веб-API (IntersectionObserver, adoptedStyleSheets, события композиции) — корпус вырос до 84,6%; media/WebGL/SW/MSE — todo | Зависит от: I3
+
+**Итог первой части (2026-10-08).** Разбор «реальных несовместимостей» из I3 с настоящим выводом ошибок страницы (в `nrb snap` консоль страницы раньше не доходила до отчёта — делегат вкладки не пересылал `show_console_message`; исправлено; для отладки есть `NRB_DEBUG_SCRIPT=tests/debug/error-hook.js` — внедряет скрипт, пишущий `onerror`/`unhandledrejection` в консоль, и `NRB_PREFS=имя,-имя` — переключатель экспериментальных настроек Servo):
+* **react.dev и svelte.dev** падали с `ReferenceError: IntersectionObserver is not defined` → настройка `dom_intersection_observer_enabled` (в Servo 0.7 выключена по умолчанию) — **включена**: обе страницы открываются;
+* **GitHub** падал с `adoptedStyleSheets is undefined` (веб-компоненты) → `dom_adoptedstylesheet_enabled` — **включена** (ошибки пропали; страница по-прежнему `partial` из-за фоновых запросов);
+* `dom_composition_event_enabled` — включена: оболочка шлёт IME-события, без настройки они не доходили до DOM;
+* пробовали пачку `fontface, visual_viewport, exec_command, permissions, storage_manager, cookiestore` — на корпусе разницы нет (в шуме ±1 сайт), **не включали**; user-agent «под Firefox» результат тоже не менял (yandex/stackoverflow/ebay — не UA).
+**Корпус (debug, системная сеть):** 44/52 ok (**84,6%**) против 38–40/49 (78–82%) раньше; открылось 52/52; из known-broken убраны react, svelte, amazon (теперь открываются; baseline поднят до 80%). Остались: stackoverflow (Cloudflare-челлендж), ebay (антибот), yandex (редирект на dzen.ru и пустой кадр — тяжёлое SPA), twitch (не дозагружается), neverssl (среда).
+**Не сделано:** медиа (`<video>`, MSE), WebGL2/WebGPU, Service Workers (настройка есть, не пробовали на корпусе осознанно — риск), печать, a11y.
 **Задачи** — по отчётам корпуса: `<video>/<audio>` (фича `media-gstreamer`; решить — поставляем GStreamer или документируем зависимость), WebGL/WebGPU, Service Workers, IndexedDB, WebRTC в relay-режиме, permissions UI, печать, a11y; подмножество WPT; **MSE** — отслеживание апстрима (Servo Multimedia, с июня 2026) и решение «ждём/второй движок».
 **Приёмка** — список «поддерживается / частично / нет» в `docs/COMPAT.md`, обновляется автоматически из корпуса.
 

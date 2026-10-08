@@ -14,21 +14,10 @@ id = "ebay"
 reason = "антибот-страница «Pardon Our Interruption»"
 
 [[broken]]
-id = "react"
-reason = "react.dev: «Application error: a client-side exception» — реальный JS-сбой в Servo, требует разбора (I13)"
-
-[[broken]]
 id = "yandex"
 reason = "пустой кадр без заголовка; не исследовано (возможен антибот/капча)"
-
-[[broken]]
-id = "amazon"
-reason = "пустой кадр без заголовка; не исследовано (возможен антибот)"
 
 [[broken]]
 id = "twitch"
 reason = "не дозагружается за 55 с даже в режиме partial; тяжёлое SPA, не исследовано"
 
-[[broken]]
-id = "svelte"
-reason = "заголовок «500» — страница ошибки на стороне сайта или несовместимость; не исследовано"

@@ -92,9 +92,12 @@ pub fn run(
         initial_urls,
         servo: ServoConfig {
             proxy,
-            user_agent: None,
+            user_agent: std::env::var("NRB_USER_AGENT")
+                .ok()
+                .filter(|s| !s.is_empty()),
             profile_dir: profile.for_window(),
             devtools_port: devtools,
+            user_scripts: Vec::new(),
         },
         search: search.to_owned(),
         userscripts,

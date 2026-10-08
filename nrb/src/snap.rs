@@ -70,9 +70,16 @@ pub fn run(args: Args) -> i32 {
     let proxy = tunnel.as_ref().map(|t| t.proxy_url()).or(args.proxy);
     let mut engine = match ServoSnapshotter::new(&ServoConfig {
         proxy,
-        user_agent: None,
+        user_agent: std::env::var("NRB_USER_AGENT")
+            .ok()
+            .filter(|s| !s.is_empty()),
         profile_dir: args.profile.for_snap(),
         devtools_port: None,
+        // Отладка: `NRB_DEBUG_SCRIPT=файл.js` внедряется во все страницы снимка (см. tests/debug/error-hook.js).
+        user_scripts: std::env::var_os("NRB_DEBUG_SCRIPT")
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .into_iter()
+            .collect(),
     }) {
         Ok(engine) => engine,
         Err(error) => {

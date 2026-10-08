@@ -43,5 +43,5 @@ for _ in $(seq 1 20); do [ -s "$OUT/auth-port.txt" ] && break; sleep 0.2; done
 AUTH_PORT=$(head -1 "$OUT/auth-port.txt")
 xdotool key ctrl+l; sleep 0.3; xdotool type --delay 30 "127.0.0.1:$AUTH_PORT"; xdotool key Return; sleep 2; shot 06-auth
 xdotool type --delay 50 "user"; xdotool key Tab; xdotool type --delay 50 "passwd"; sleep 0.3; xdotool key Return; sleep 2
-check "HTTP-авторизация: логин и пароль приняты" "auth ok"
+check_wait "HTTP-авторизация: логин и пароль приняты" "auth ok"
 gui_finish

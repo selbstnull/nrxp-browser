@@ -27,12 +27,48 @@ pub struct ServoConfig {
     pub profile_dir: Option<std::path::PathBuf>,
     /// Порт сервера DevTools (слушает только 127.0.0.1). `None` — выключен.
     pub devtools_port: Option<u16>,
+    /// JavaScript, внедряемый во все страницы (пользовательские скрипты, отладочные хуки). Применяется при загрузке страницы.
+    pub user_scripts: Vec<String>,
 }
 
 pub use servo;
 
 mod resources;
 pub use resources::ERROR_PAGE_TITLES;
+
+/// Применяет список вида `a,b,-c`: имя включает настройку `dom_<имя>_enabled`, `-имя` выключает. Неизвестные имена — в stderr.
+pub fn apply_pref_overrides(prefs: &mut Preferences, spec: &str) {
+    for item in spec.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+        let (on, name) = match item.strip_prefix('-') {
+            Some(name) => (false, name),
+            None => (true, item),
+        };
+        let slot: Option<&mut bool> = match name {
+            "intersection_observer" => Some(&mut prefs.dom_intersection_observer_enabled),
+            "adoptedstylesheet" => Some(&mut prefs.dom_adoptedstylesheet_enabled),
+            "fontface" => Some(&mut prefs.dom_fontface_enabled),
+            "visual_viewport" => Some(&mut prefs.dom_visual_viewport_enabled),
+            "web_animations" => Some(&mut prefs.dom_web_animations_enabled),
+            "serviceworker" => Some(&mut prefs.dom_serviceworker_enabled),
+            "permissions" => Some(&mut prefs.dom_permissions_enabled),
+            "storage_manager" => Some(&mut prefs.dom_storage_manager_api_enabled),
+            "exec_command" => Some(&mut prefs.dom_exec_command_enabled),
+            "composition_event" => Some(&mut prefs.dom_composition_event_enabled),
+            "cookiestore" => Some(&mut prefs.dom_cookiestore_enabled),
+            "webgl2" => Some(&mut prefs.dom_webgl2_enabled),
+            "offscreen_canvas" => Some(&mut prefs.dom_offscreen_canvas_enabled),
+            "async_clipboard" => Some(&mut prefs.dom_async_clipboard_enabled),
+            "credential_management" => Some(&mut prefs.dom_credential_management_enabled),
+            "worklet" => Some(&mut prefs.dom_worklet_enabled),
+            "resize_observer" => Some(&mut prefs.dom_resize_observer_enabled),
+            _ => None,
+        };
+        match slot {
+            Some(slot) => *slot = on,
+            None => eprintln!("NRB_PREFS: неизвестная настройка «{name}»"),
+        }
+    }
+}
 
 /// Настройки Servo из нашей конфигурации (общие для headless-снимков и оболочки).
 pub fn build_preferences(config: &ServoConfig) -> Preferences {
@@ -42,8 +78,19 @@ pub fn build_preferences(config: &ServoConfig) -> Preferences {
         // Экспериментальные в Servo, но нужные реальным сайтам; влияние на корпус отслеживаем (I13).
         dom_indexeddb_enabled: true,
         dom_notification_enabled: true,
+        // Без IntersectionObserver не открываются react.dev и svelte.dev (ReferenceError при гидратации): нужен реальным сайтам.
+        dom_intersection_observer_enabled: true,
+        // adoptedStyleSheets нужны веб-компонентам (GitHub падал с «adoptedStyleSheets is undefined»).
+        dom_adoptedstylesheet_enabled: true,
+        // События композиции (ввод через IME) — оболочка их шлёт, но без настройки они не доходят до страницы.
+        dom_composition_event_enabled: true,
         ..Preferences::default()
     };
+    // Экспериментальные переключатели для замеров на корпусе: `NRB_PREFS=intersection_observer,fontface` (включить)
+    // и `NRB_PREFS=-fontface` (выключить). Список ограничен известными булевыми настройками `dom_*`.
+    if let Ok(spec) = std::env::var("NRB_PREFS") {
+        apply_pref_overrides(&mut prefs, &spec);
+    }
     if let Some(proxy) = &config.proxy {
         prefs.network_http_proxy_uri = proxy.clone();
         prefs.network_https_proxy_uri = proxy.clone();
@@ -90,6 +137,13 @@ struct PageState {
 struct PageDelegate(Rc<PageState>);
 
 impl WebViewDelegate for PageDelegate {
+    fn show_console_message(&self, _webview: WebView, level: ConsoleLogLevel, message: String) {
+        self.0
+            .console
+            .borrow_mut()
+            .push(format!("[{level:?}] {message}"));
+    }
+
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
         self.0.status.set(Some(status));
     }
@@ -130,6 +184,7 @@ impl EventLoopWaker for PollWaker {
 pub struct ServoSnapshotter {
     servo: Servo,
     state: Rc<PageState>,
+    user_content: Option<Rc<servo::UserContentManager>>,
 }
 
 impl ServoSnapshotter {
@@ -143,7 +198,18 @@ impl ServoSnapshotter {
             .build();
         let state = Rc::new(PageState::default());
         servo.set_delegate(Rc::new(ConsoleDelegate(state.clone())));
-        Ok(Self { servo, state })
+        let user_content = (!config.user_scripts.is_empty()).then(|| {
+            let manager = Rc::new(servo::UserContentManager::new(&servo));
+            for js in &config.user_scripts {
+                manager.add_script(Rc::new(servo::UserScript::new(js.clone(), None)));
+            }
+            manager
+        });
+        Ok(Self {
+            servo,
+            state,
+            user_content,
+        })
     }
 
     /// Крутит движок, пока `done()` не вернёт `true` или не истечёт срок. `Ok(false)` — срок вышел.
@@ -193,10 +259,13 @@ impl Snapshotter for ServoSnapshotter {
 
         let started = Instant::now();
         let deadline = started + req.timeout;
-        let webview = WebViewBuilder::new(&self.servo, context.clone())
+        let mut builder = WebViewBuilder::new(&self.servo, context.clone())
             .url(req.url.clone())
-            .delegate(Rc::new(PageDelegate(self.state.clone())))
-            .build();
+            .delegate(Rc::new(PageDelegate(self.state.clone())));
+        if let Some(manager) = &self.user_content {
+            builder = builder.user_content_manager(manager.clone());
+        }
+        let webview = builder.build();
 
         let state = self.state.clone();
         let completed = self.pump(Some(&webview), deadline, || {
