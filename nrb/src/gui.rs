@@ -122,6 +122,7 @@ pub fn run(
             3
         }
     };
+    nrb_engine_servo::cleanup_ephemeral();
     if let Some(manager) = manager {
         manager.shutdown();
         if manager.restart_requested() {

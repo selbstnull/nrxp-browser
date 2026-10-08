@@ -112,9 +112,58 @@ pub fn build_preferences(config: &ServoConfig) -> Preferences {
 /// Опции движка: где хранить данные. Без `profile_dir` хранилище временное.
 pub fn build_opts(config: &ServoConfig) -> servo::Opts {
     servo::Opts {
-        config_dir: config.profile_dir.clone(),
+        // Без профиля каталог для временных данных задаём сами: если оставить `None`, Servo создаёт временный каталог, не
+        // удерживая его (`let _ = temp_dir;` ничего не захватывает) — тот удаляется сразу, хранилище IndexedDB падает на
+        // «unable to open database file» и откатывается на базу в памяти с путями относительно текущего каталога
+        // (`./bottles/…` — мусор в каталоге запуска).
+        config_dir: config.profile_dir.clone().or_else(|| ephemeral_dir().ok()),
         temporary_storage: config.profile_dir.is_none(),
         ..servo::Opts::default()
+    }
+}
+
+/// Каталог временных данных процесса: `<tmp>/nrb-ephemeral-<pid>`, права 0700. Убирается [`cleanup_ephemeral`];
+/// каталоги умерших процессов подчищаются при создании.
+pub fn ephemeral_dir() -> std::io::Result<std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    if let Some(dir) = DIR.get() {
+        return Ok(dir.clone());
+    }
+    let base = std::env::temp_dir();
+    sweep_stale_ephemeral(&base);
+    let dir = base.join(format!("nrb-ephemeral-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(DIR.get_or_init(|| dir).clone())
+}
+
+/// Удаляет временный каталог этого процесса (звать перед выходом; безопасно звать без него).
+pub fn cleanup_ephemeral() {
+    let dir = std::env::temp_dir().join(format!("nrb-ephemeral-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Убирает `nrb-ephemeral-<pid>` процессов, которых уже нет (после аварийного выхода).
+fn sweep_stale_ephemeral(base: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("nrb-ephemeral-"))
+            .and_then(|p| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !std::path::Path::new(&format!("/proc/{pid}")).exists() && cfg!(target_os = "linux") {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
     }
 }
 

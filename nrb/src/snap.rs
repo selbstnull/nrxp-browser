@@ -45,6 +45,13 @@ pub fn run(_args: Args) -> i32 {
 
 #[cfg(feature = "servo")]
 pub fn run(args: Args) -> i32 {
+    let code = run_inner(args);
+    nrb_engine_servo::cleanup_ephemeral();
+    code
+}
+
+#[cfg(feature = "servo")]
+fn run_inner(args: Args) -> i32 {
     use nrb_engine::{EngineError, SnapshotRequest, Snapshotter};
     use nrb_engine_servo::{ServoConfig, ServoSnapshotter};
 

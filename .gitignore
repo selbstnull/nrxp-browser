@@ -5,3 +5,4 @@
 .nrb-dev/
 *.swp
 /target-release
+/bottles
