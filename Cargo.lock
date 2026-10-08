@@ -4688,6 +4688,7 @@ dependencies = [
  "anyhow",
  "clap",
  "humantime",
+ "libc",
  "nrb-adblock",
  "nrb-deploy",
  "nrb-engine",

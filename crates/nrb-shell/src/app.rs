@@ -74,7 +74,11 @@ pub fn run(config: ShellConfig) -> anyhow::Result<()> {
         proxy: event_loop.create_proxy(),
         config: Some(Box::new(config)),
     };
-    event_loop.run_app(&mut app)?;
+    let result = event_loop.run_app(&mut app);
+    // Не разбираем Servo при выходе: его остановка может упасть с abort (assert в WebGL, `is_deleted`) уже после того, как
+    // сессия и профиль сохранены, и это превращает обычное закрытие окна в аварийное. Процесс всё равно завершается.
+    std::mem::forget(app);
+    result?;
     Ok(())
 }
 

@@ -36,7 +36,9 @@ mkdir -p "$D/DEBIAN" "$D/usr/bin" "$D/usr/share/applications" "$D/usr/share/icon
 install -m755 "$BIN" "$D/usr/bin/nrb"
 install -m644 packaging/nrb.desktop "$D/usr/share/applications/nrb.desktop"
 install -m644 packaging/nrb.svg "$D/usr/share/icons/hicolor/scalable/apps/nrb.svg"
-DEPS="$(ldd "$BIN" | awk '/=> \//{print $3}' | xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | sort -u | paste -sd, - | sed 's/,/, /g')"
+DEPS="$(ldd "$BIN" | awk '/=> \//{print $3}' | xargs -r -n1 readlink -f | xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | sort -u | paste -sd, - | sed 's/,/, /g')"
+# Библиотеки, которые окно подгружает через dlopen (в `ldd` их нет): X11/Wayland, EGL/GL, раскладки.
+DEPS="$DEPS, libegl1, libgl1, libx11-6, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1"
 SIZE="$(du -sk "$D/usr" | cut -f1)"
 cat > "$D/DEBIAN/control" <<CTL
 Package: nrb

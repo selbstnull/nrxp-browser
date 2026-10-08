@@ -424,7 +424,14 @@ S5 — **частично, и вывод неприятный:** `MAX_DATAGRAM_L
 **Приёмка** — список «поддерживается / частично / нет» в `docs/COMPAT.md`, обновляется автоматически из корпуса.
 
 ### I14 — Дистрибутивы, обновления, CI, платформы
-Статус: todo | Зависит от: I8, I11
+Статус: частично (2026-10-08): release-сборка, tar.gz и deb, черновики Gitea workflows; обновления с подписью, Windows/Android, проверенный CI — todo | Зависит от: I8, I11
+
+**Итог первой части (2026-10-08).**
+* **Release с движком:** `CARGO_TARGET_DIR=target-release cargo build --release -p nrb --features servo` — 7 мин на этой машине (инкрементально 15 с), бинарь 146 МБ (`strip = "symbols"` в профиле). Корпус в release: **46/52 ok (88,5%)**, открылось 52/52, медиана загрузки **0,8 с** (debug ~5,9 с), весь корпус за 80 с.
+* **Найдено на release:** Servo падает при остановке процесса — `webglbuffer.rs:85 assertion failed: self.is_deleted()` (Drop WebGL-буфера на GitHub), затем abort/SIGSEGV уже **после** готового снимка; код выхода терялся (134/139), оркестратор корпуса считал бы это крахом. Исправлено нашей стороной: движок не разбирается при выходе (`ManuallyDrop` в `snap`, `forget` в оболочке), процесс завершается через `_exit` после сброса буферов. Итог: 3 прогона GitHub подряд — код 0. **Апстрим-баг Servo остаётся** (стоит завести issue).
+* **Пакеты:** `scripts/package.sh` → `dist/nrb-<версия>-linux-<arch>.tar.gz` (бинарь, `.desktop`, значок, `install.sh` в `~/.local`) и `nrb_<версия>_amd64.deb` (зависимости из `ldd` через `readlink -f` + `dpkg -S`, плюс dlopen-библиотеки X11/Wayland/EGL), `SHA256SUMS`. deb собирается и читается `dpkg-deb -I`; **установка на чистой системе не проверялась**.
+* **CI:** `.gitea/workflows/ci.yml` (fmt, clippy, тесты крейтов без Servo) и `servo.yml` (release, e2e-самопроверки, пакеты; вручную или по тегу), у каждой джобы `timeout-minutes`. **На раннере Gitea не запускались**: имена меток раннера, секрет `PROXY_REPO_TOKEN` и доступ к репозиторию ядра — предположения.
+* **Не сделано:** подписанный канал обновлений (ed25519) и `nrb deploy --upgrade` с проверкой подписи, AppImage/rpm, Windows/Android, кэш сборки Servo в CI, релизные артефакты в Gitea Releases.
 **Задачи** — musl-сборка узла; GUI-пакеты (AppImage/deb/rpm), Windows, Android; подписанный канал обновлений (ed25519), проверка подписи на клиенте и сервере; CI на Gitea (`.gitea/workflows/`, **обязательно `timeout-minutes`** — у раннера всего 2 слота, зависшая джоба блокирует все репозитории); кэш сборки Servo; релизные артефакты в Gitea Container Registry/Releases.
 **Приёмка** — релиз собирается в CI с нуля; обновление `nrb node` на VPS командой `nrb deploy --upgrade`.
 

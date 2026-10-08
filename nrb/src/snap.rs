@@ -75,7 +75,7 @@ fn run_inner(args: Args) -> i32 {
         None
     };
     let proxy = tunnel.as_ref().map(|t| t.proxy_url()).or(args.proxy);
-    let mut engine = match ServoSnapshotter::new(&ServoConfig {
+    let engine = match ServoSnapshotter::new(&ServoConfig {
         proxy,
         user_agent: std::env::var("NRB_USER_AGENT")
             .ok()
@@ -94,6 +94,10 @@ fn run_inner(args: Args) -> i32 {
             return 3;
         }
     };
+    // Servo при штатной остановке (Drop) может упасть с abort на assert внутри WebGL (`webglbuffer.rs: is_deleted`; на
+    // release это роняет процесс уже после готового снимка и теряет код выхода). Процесс всё равно завершается — не
+    // разбираем движок.
+    let mut engine = std::mem::ManuallyDrop::new(engine);
     let request = SnapshotRequest {
         url: args.url,
         size: args.size,

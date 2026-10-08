@@ -257,5 +257,16 @@ fn main() {
         }
         None => gui::run(cli.urls, cli.proxy, cli.node, cli.profile, cli.devtools),
     };
+    // Выходим без обычной остановки процесса: пока в нём живы потоки Servo/SpiderMonkey, atexit-обработчики и статические
+    // деструкторы на release падают (SIGSEGV/abort уже после готового результата, теряется код выхода).
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    #[cfg(unix)]
+    // SAFETY: `_exit` не возвращается и не обращается к памяти Rust; буферы выше сброшены.
+    unsafe {
+        libc::_exit(code)
+    }
+    #[cfg(not(unix))]
     std::process::exit(code);
 }
