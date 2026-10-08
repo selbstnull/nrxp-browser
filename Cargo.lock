@@ -4691,6 +4691,7 @@ dependencies = [
  "nrb-deploy",
  "nrb-engine",
  "nrb-engine-servo",
+ "nrb-hermetic",
  "nrb-net",
  "nrb-node",
  "nrb-shell",
@@ -4751,6 +4752,15 @@ dependencies = [
  "servo",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "nrb-hermetic"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -363,11 +363,13 @@ pub fn nodes_dir() -> Option<PathBuf> {
 }
 
 /// Файл с выбором узла для туннеля (имя конфига без `.toml`); нет файла — напрямую.
+#[cfg_attr(not(feature = "servo"), allow(dead_code))]
 fn selection_file() -> Option<PathBuf> {
     default_data_dir().map(|d| d.join("selected-node"))
 }
 
 /// Конфиг выбранного в окне «Узлы» узла, если он есть и ещё существует.
+#[cfg_attr(not(feature = "servo"), allow(dead_code))]
 pub fn selected_config() -> Option<PathBuf> {
     let name = std::fs::read_to_string(selection_file()?).ok()?;
     let name = name.trim();
@@ -378,6 +380,7 @@ pub fn selected_config() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+#[cfg_attr(not(feature = "servo"), allow(dead_code))]
 pub fn write_selection(name: Option<&str>) -> std::io::Result<()> {
     let Some(path) = selection_file() else {
         return Err(std::io::Error::other("нет каталога данных"));

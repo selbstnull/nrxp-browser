@@ -12,6 +12,7 @@ mod fetch;
 mod gui;
 #[cfg(feature = "servo")]
 mod gui_nodes;
+mod hermetic;
 mod node;
 mod profile;
 mod snap;
@@ -156,11 +157,21 @@ enum Command {
         #[command(subcommand)]
         command: adblock::AdblockCommand,
     },
+    /// Самопроверка герметичного режима (I11): прямые соединения невозможны, через релей и туннель — работает.
+    HermeticSelftest {
+        #[command(flatten)]
+        node: tunnel::NodeArgs,
+        /// Порт TCP-слушателя на loopback хоста: из герметичного режима он обязан быть недоступен.
+        #[arg(long)]
+        host_port: Option<u16>,
+    },
     /// Версия.
     Version,
 }
 
 fn main() {
+    // До потоков: пространство имён пользователя можно создать только в однопоточном процессе.
+    hermetic::early_init();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -239,6 +250,7 @@ fn main() {
             allow_lan,
         }) => node::egress(&node, label, allow_lan),
         Some(Command::Adblock { command }) => adblock::run(command),
+        Some(Command::HermeticSelftest { node, host_port }) => hermetic::selftest(&node, host_port),
         Some(Command::Version) => {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));
             0

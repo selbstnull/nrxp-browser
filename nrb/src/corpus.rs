@@ -325,6 +325,12 @@ pub fn run(args: Args) -> i32 {
         eprintln!("не удалось создать {}: {error}", out.display());
         return 64;
     }
+    if args.node.hermetic {
+        eprintln!(
+            "corpus: --hermetic не поддерживается (дочерние снимки получают прокси по TCP); проверяйте `nrb snap --hermetic`"
+        );
+        return 64;
+    }
     // Один туннель на весь прогон: все дочерние `nrb snap` ходят через общий локальный прокси.
     let tunnel = if args.node.enabled() {
         match crate::tunnel::start(&args.node) {

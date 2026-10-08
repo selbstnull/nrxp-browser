@@ -24,6 +24,7 @@
 | Деплой узла на VPS по SSH (`nrb deploy`) | работает на тестовом контейнере (systemd + sshd: установка, апгрейд, откат, удаление); **на реальном VPS не проверялось** |
 | Reverse-egress (домашний `nrb` за NAT как выход: `nrb egress`, `nrb node invite --egress`, `exit = "require"`) | работает на loopback (3 процесса, `scripts/egress-e2e.sh`, тесты ядра); требует **патч ядра** `patches/proxy/0002` (не запушен, без ревью); не проверено на двух реальных хостах; нет лимитов, выбор выхода — один на узел |
 | HTTP/3 поверх NRXP | не начато; в ядре потолок датаграммы 1150 B < 1200 B у QUIC — нужна правка ядра |
+| Герметичный режим `--hermetic` (Linux): движок в пустом сетевом пространстве имён, прямых соединений нет по построению | работает (самопроверка `nrb hermetic-selftest`, `scripts/hermetic-e2e.sh`, `gui-hermetic.sh`); один процесс, без sandbox; зависит от разрешённых пользовательских namespaces |
 | Блокировщик рекламы и трекеров (`nrb adblock update`, EasyList/EasyPrivacy, счётчик в тулбаре) | работает на сетевом уровне (юнит-тесты, `scripts/gui-adblock.sh`, проверка на cnn.com); нет косметических правил, скриптлетов, режима I |
 | Пользовательские скрипты/стили (`<профиль>/userscripts/*.user.js`, `*.user.css`, `@match`/`@exclude`/`@run-at`) | работает (`scripts/gui-userscripts.sh`); без `GM_*` API и без управления в GUI |
 | Загрузки файлов, поиск по странице, печать, менеджер паролей, MSE-видео, расширения | нет (ограничения Servo 0.7 или не сделано) |
@@ -68,6 +69,8 @@ scripts/gui-profile.sh
 scripts/leakwatch.sh /tmp/stop > leaks.txt &  # наблюдатель за прямыми соединениями процесса nrb
 scripts/node-e2e.sh                           # сквозная проверка своего узла (loopback)
 scripts/gui-nodes.sh                          # окно «Узлы»: два экземпляра браузера, спаривание и перезапуск через узел
+scripts/hermetic-e2e.sh                       # герметичный режим: самопроверка отсутствия прямых соединений
+scripts/gui-hermetic.sh                       # окно в герметичном режиме, потоки по сетевым пространствам имён
 scripts/gui-adblock.sh                        # блокировщик рекламы: локальный сервер, правило /ads/*$script
 scripts/gui-userscripts.sh                    # пользовательские скрипты и стили
 scripts/egress-e2e.sh                         # reverse-egress: клиент → узел → домашний выход (3 процесса, loopback)
@@ -78,7 +81,7 @@ scripts/deploy-e2e.sh                         # деплой в тестовый
 
 `nrb` (бинарь) · `crates/nrb-engine` (трейт движка, омнибокс) · `nrb-engine-servo` (Servo, русские страницы ошибок) ·
 `nrb-shell` (окно, вкладки, диалоги, библиотека) · `nrb-transport` (NRXP-потоки без TUN) · `nrb-net` (h1/h2 клиент, локальный прокси) ·
-`nrb-profile` (история/закладки/сессия/настройки) · `nrb-node` (узел: ingress, реестр устройств, приглашения, домашний выход) · `nrb-adblock` (блокировщик) · `nrb-userscripts` (скрипты и стили) · `nrb-deploy` (деплой узла по SSH).
+`nrb-profile` (история/закладки/сессия/настройки) · `nrb-node` (узел: ingress, реестр устройств, приглашения, домашний выход) · `nrb-adblock` (блокировщик) · `nrb-userscripts` (скрипты и стили) · `nrb-hermetic` (пустой netns для движка) · `nrb-deploy` (деплой узла по SSH).
 
 ## Лицензия
 

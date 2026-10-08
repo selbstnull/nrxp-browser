@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use nrb_transport::Transport;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
 const MAX_HEAD: usize = 16 * 1024;
@@ -35,7 +35,9 @@ pub struct ProxyPolicy {
 }
 
 pub struct LocalProxy {
+    /// Для варианта на unix-сокете (`start_unix`) — заглушка `127.0.0.1:0`; адрес смотрите в `unix_path`.
     addr: SocketAddr,
+    unix_path: Option<std::path::PathBuf>,
     username: String,
     password: String,
     stats: Arc<ProxyStats>,
@@ -45,6 +47,9 @@ pub struct LocalProxy {
 impl Drop for LocalProxy {
     fn drop(&mut self) {
         self.task.abort();
+        if let Some(path) = &self.unix_path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -81,11 +86,63 @@ impl LocalProxy {
         });
         Ok(Self {
             addr,
+            unix_path: None,
             username,
             password,
             stats,
             task,
         })
+    }
+
+    /// Вариант для герметичного режима (I11): слушает **unix-сокет** (путь доступен и из другого сетевого пространства имён),
+    /// а не TCP. Права на сокет — только владельцу (каталог 0700 создаёт вызывающий). Доступ к прокси по-прежнему по
+    /// логину и паролю: сокет-файл — не единственная защита.
+    #[cfg(unix)]
+    pub async fn start_unix(
+        path: &std::path::Path,
+        transport: Arc<dyn Transport>,
+        policy: ProxyPolicy,
+    ) -> io::Result<Self> {
+        let _ = std::fs::remove_file(path);
+        let listener = tokio::net::UnixListener::bind(path)?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        let username = format!("nrb-{}", random_token());
+        let password = random_token();
+        let expected = basic_credentials(&username, &password);
+        let stats = Arc::new(ProxyStats::default());
+        let task_stats = stats.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let (transport, expected, stats) =
+                    (transport.clone(), expected.clone(), task_stats.clone());
+                tokio::spawn(async move {
+                    let _ = handle(socket, transport, &expected, policy, &stats).await;
+                });
+            }
+        });
+        Ok(Self {
+            addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            unix_path: Some(path.to_owned()),
+            username,
+            password,
+            stats,
+            task,
+        })
+    }
+
+    pub fn unix_path(&self) -> Option<&std::path::Path> {
+        self.unix_path.as_deref()
+    }
+
+    /// Логин и пароль прокси (для сборки URL, когда адрес даёт релей, а не сам прокси).
+    pub fn credentials(&self) -> (&str, &str) {
+        (&self.username, &self.password)
     }
 
     pub fn addr(&self) -> SocketAddr {
@@ -174,12 +231,12 @@ fn is_private_target(host: &str) -> bool {
 }
 
 /// Обёртка над клиентским сокетом: прочитанное — исходящий трафик браузера, записанное — входящий.
-struct Counted<'a> {
-    inner: TcpStream,
+struct Counted<'a, S> {
+    inner: S,
     stats: &'a ProxyStats,
 }
 
-impl tokio::io::AsyncRead for Counted<'_> {
+impl<S: AsyncRead + Unpin> tokio::io::AsyncRead for Counted<'_, S> {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -196,7 +253,7 @@ impl tokio::io::AsyncRead for Counted<'_> {
     }
 }
 
-impl tokio::io::AsyncWrite for Counted<'_> {
+impl<S: AsyncWrite + Unpin> tokio::io::AsyncWrite for Counted<'_, S> {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -234,7 +291,7 @@ struct Head {
     leftover: Vec<u8>,
 }
 
-async fn read_head(socket: &mut TcpStream) -> io::Result<Head> {
+async fn read_head<S: AsyncRead + Unpin>(socket: &mut S) -> io::Result<Head> {
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = [0u8; 2048];
     loop {
@@ -272,7 +329,7 @@ async fn read_head(socket: &mut TcpStream) -> io::Result<Head> {
     }
 }
 
-async fn reply(socket: &mut TcpStream, status: &str, extra: &str) {
+async fn reply<S: AsyncWrite + Unpin>(socket: &mut S, status: &str, extra: &str) {
     let _ = socket
         .write_all(
             format!("HTTP/1.1 {status}\r\n{extra}content-length: 0\r\nconnection: close\r\n\r\n")
@@ -295,8 +352,8 @@ fn split_host_port(target: &str) -> Option<(String, u16)> {
     })
 }
 
-async fn handle(
-    mut socket: TcpStream,
+async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
+    mut socket: S,
     transport: Arc<dyn Transport>,
     expected: &str,
     policy: ProxyPolicy,

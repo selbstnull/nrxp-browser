@@ -46,8 +46,18 @@ pub fn run(
             None
         }
     };
+    if node.hermetic && !node.enabled() {
+        eprintln!(
+            "герметичный режим требует узла (--node или выбор в окне «Узлы»): прямого выхода в сеть у движка не будет"
+        );
+        return 3;
+    }
     let tunnel = if node.enabled() {
-        match crate::tunnel::start(&node) {
+        match crate::tunnel::start(&node).and_then(|mut tunnel| {
+            // Менеджер узлов уже создан (его рантайм остался в сети хоста); дальше потоки наследуют пустое пространство имён.
+            tunnel.isolate()?;
+            Ok(tunnel)
+        }) {
             Ok(tunnel) => Some(std::sync::Arc::new(tunnel)),
             Err(error) => {
                 eprintln!("туннель: {error}");

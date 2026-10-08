@@ -1,0 +1,12 @@
+[package]
+name = "nrb-hermetic"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Герметичный режим (I11, Linux): движок в пустом сетевом пространстве имён, наружу — только релей до прокси туннеля"
+
+[dependencies]
+libc = "0.2"
+tokio = { workspace = true }
+tracing.workspace = true

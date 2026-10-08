@@ -49,8 +49,15 @@ pub fn run(args: Args) -> i32 {
     use nrb_engine_servo::{ServoConfig, ServoSnapshotter};
 
     // Туннель живёт до конца процесса: движок ходит в сеть только через него.
+    if args.node.hermetic && !args.node.enabled() {
+        eprintln!("герметичный режим требует узла (--node)");
+        return 3;
+    }
     let tunnel = if args.node.enabled() {
-        match crate::tunnel::start(&args.node) {
+        match crate::tunnel::start(&args.node).and_then(|mut tunnel| {
+            tunnel.isolate()?; // герметичный режим: дальше потоки движка в пустом сетевом пространстве имён
+            Ok(tunnel)
+        }) {
             Ok(tunnel) => Some(tunnel),
             Err(error) => {
                 eprintln!("туннель: {error}");

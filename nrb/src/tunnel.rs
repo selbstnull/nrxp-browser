@@ -19,6 +19,10 @@ pub struct NodeArgs {
     /// Разрешить через туннель цели loopback/private/link-local (по умолчанию запрещены: иначе страница сканирует сеть узла).
     #[arg(long)]
     pub allow_private: bool,
+    /// Герметичный режим (Linux, I11): движок в пустом сетевом пространстве имён — прямых соединений у него нет по построению,
+    /// наружу только через прокси туннеля. Требует узла; без пользовательских пространств имён отказывает, а не деградирует.
+    #[arg(long, env = "NRB_HERMETIC")]
+    pub hermetic: bool,
 }
 
 impl NodeArgs {
@@ -29,14 +33,32 @@ impl NodeArgs {
 
 #[cfg_attr(not(feature = "servo"), allow(dead_code))]
 pub struct Tunnel {
-    // Порядок важен: прокси и транспорт должны умереть раньше рантайма.
+    // Порядок важен: релей и прокси и транспорт должны умереть раньше рантайма.
+    isolation: Option<crate::hermetic::Isolated>,
     proxy: LocalProxy,
     transport: Arc<NrxpTransport>,
     label: String,
+    hermetic_dir: Option<std::path::PathBuf>,
     _runtime: Runtime,
 }
 
 pub fn start(args: &NodeArgs) -> Result<Tunnel, String> {
+    if args.hermetic {
+        let dir = crate::hermetic::socket_dir().map_err(|e| format!("каталог сокета: {e}"))?;
+        let mut tunnel = start_with(args, Some(&dir.join("proxy.sock")))?;
+        tunnel.hermetic_dir = Some(dir);
+        return Ok(tunnel);
+    }
+    start_with(args, None)
+}
+
+/// Герметичный вариант (I11): прокси слушает unix-сокет, TCP-порта на хосте нет.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub fn start_unix(args: &NodeArgs, socket: &std::path::Path) -> Result<Tunnel, String> {
+    start_with(args, Some(socket))
+}
+
+fn start_with(args: &NodeArgs, unix_socket: Option<&std::path::Path>) -> Result<Tunnel, String> {
     let config = match (&args.node, &args.node_addr) {
         // `--node 'nrxp://…'` — приглашение прямо в аргументе (без предварительного `nrb pair`). В сообщениях об ошибках
         // саму ссылку не печатаем: в ней секреты узла и токен устройства.
@@ -64,17 +86,24 @@ pub fn start(args: &NodeArgs) -> Result<Tunnel, String> {
                 .await
                 .map_err(|e| format!("подключение к узлу {}: {e}", config.addr))?,
         );
-        let proxy = LocalProxy::start(
-            transport.clone(),
-            ProxyPolicy {
-                allow_private: args.allow_private,
-            },
-        )
-        .await
+        let policy = ProxyPolicy {
+            allow_private: args.allow_private,
+        };
+        let proxy = match unix_socket {
+            #[cfg(unix)]
+            Some(path) => LocalProxy::start_unix(path, transport.clone(), policy).await,
+            #[cfg(not(unix))]
+            Some(_) => Err(std::io::Error::other(
+                "unix-сокеты недоступны на этой платформе",
+            )),
+            None => LocalProxy::start(transport.clone(), policy).await,
+        }
         .map_err(|e| format!("локальный прокси: {e}"))?;
         Ok::<_, String>((transport, proxy))
     })?;
     Ok(Tunnel {
+        isolation: None,
+        hermetic_dir: None,
         proxy,
         transport,
         label,
@@ -82,10 +111,45 @@ pub fn start(args: &NodeArgs) -> Result<Tunnel, String> {
     })
 }
 
+impl Drop for Tunnel {
+    fn drop(&mut self) {
+        if let Some(dir) = &self.hermetic_dir {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 impl Tunnel {
+    /// Логин и пароль прокси (для герметичного режима URL собирается с портом релея).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub fn credentials(&self) -> (&str, &str) {
+        self.proxy.credentials()
+    }
+
     /// `http://логин:пароль@127.0.0.1:порт` — для prefs движка и переменной `NRB_PROXY_URL` дочерних процессов.
     pub fn proxy_url(&self) -> String {
-        self.proxy.url()
+        match &self.isolation {
+            Some(isolation) => isolation.url.clone(),
+            None => self.proxy.url(),
+        }
+    }
+
+    /// Герметичный режим: входит **этим потоком** в пустое сетевое пространство имён и поднимает релей. Звать после создания
+    /// всех рантаймов с сетью (туннель, менеджер узлов) и перед созданием движка. Без `--hermetic` ничего не делает.
+    #[cfg_attr(not(feature = "servo"), allow(dead_code))]
+    pub fn isolate(&mut self) -> Result<(), String> {
+        let Some(dir) = self.hermetic_dir.take() else {
+            return Ok(());
+        };
+        let socket = dir.join("proxy.sock");
+        let creds = self.proxy.credentials();
+        let (relay, url) = crate::hermetic::isolate(&socket, creds)?;
+        self.isolation = Some(crate::hermetic::Isolated {
+            url,
+            _relay: relay,
+            dir,
+        });
+        Ok(())
     }
 }
 
@@ -105,7 +169,12 @@ impl nrb_shell::TunnelStatus for Tunnel {
             b => format!("{:.0} КБ", b as f64 / 1024.0),
         };
         format!(
-            "NRXP {} · ног {legs} · соед. {} · вх {} исх {}",
+            "{}NRXP {} · ног {legs} · соед. {} · вх {} исх {}",
+            if self.isolation.is_some() {
+                "герметично · "
+            } else {
+                ""
+            },
             self.label,
             stats.active.load(Ordering::Relaxed),
             human(stats.bytes_down.load(Ordering::Relaxed)),

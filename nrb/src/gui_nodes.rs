@@ -39,6 +39,17 @@ impl Manager {
         })
     }
 
+    /// Выполняет будущее на потоках рантайма менеджера (они в сети хоста), а не на вызывающем: `block_on` исполнял бы его
+    /// на потоке окна, который в герметичном режиме живёт в пустом сетевом пространстве имён (узел «слушал» бы там).
+    fn run<T: Send + 'static>(
+        &self,
+        future: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> T {
+        self.runtime
+            .block_on(self.runtime.spawn(future))
+            .expect("задача менеджера узлов завершилась аварийно")
+    }
+
     pub fn restart_requested(&self) -> bool {
         self.restart.load(Ordering::SeqCst)
     }
@@ -46,7 +57,7 @@ impl Manager {
     /// Останавливает собственный узел (перед выходом/перезапуском).
     pub fn shutdown(&self) {
         if let Some(handle) = self.ingress.lock().expect("mutex ingress").take() {
-            self.runtime.block_on(handle.shutdown());
+            self.run(handle.shutdown());
         }
     }
 }
@@ -144,12 +155,11 @@ impl NodeManager for Manager {
             let store =
                 std::sync::Arc::new(DeviceStore::open(&self.node_dir).map_err(|e| e.to_string())?);
             let handle = self
-                .runtime
-                .block_on(run_ingress(&file, store))
+                .run(async move { run_ingress(&file, store).await })
                 .map_err(|e| e.to_string())?;
             *guard = Some(handle);
         } else if let Some(handle) = guard.take() {
-            self.runtime.block_on(handle.shutdown());
+            self.run(handle.shutdown());
         }
         Ok(())
     }
