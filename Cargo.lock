@@ -380,6 +380,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "windows-sys 0.52.0",
+ "wl-clipboard-rs",
  "x11rb",
 ]
 
@@ -5381,6 +5382,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohos-pasteboard"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96ec383566f92ce8534521501d66797e7c9dd5cf0bc967a158884c04a5354a50"
+dependencies = [
+ "ohos-pasteboard-sys",
+ "udmf",
+]
+
+[[package]]
+name = "ohos-pasteboard-sys"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52a26fed7fe51d995248785dddb53afeb3f862a4094d406e09de7ab36169411c"
+dependencies = [
+ "ohos-sys-opaque-types",
+]
+
+[[package]]
 name = "ohos-sys-opaque-types"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5436,6 +5456,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95be4d57809897b5a7539fc15a7dfe0e84141bc3dfaa2e9b1b27caa90acf61ab"
 dependencies = [
  "crossbeam-channel",
+]
+
+[[package]]
+name = "os_pipe"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7048,6 +7078,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a906dab6cf91b45bc46cafba689f9a18c2b81c9013d5e104e4bdbf5d1524f68"
 dependencies = [
  "accesskit",
+ "arboard",
  "bitflags 2.13.2",
  "cookie 0.18.2",
  "crossbeam-channel",
@@ -7060,6 +7091,7 @@ dependencies = [
  "ipc-channel",
  "keyboard-types",
  "log",
+ "ohos-pasteboard",
  "parking_lot",
  "rustc-hash",
  "serde",
@@ -8140,6 +8172,7 @@ dependencies = [
  "base64 0.23.1",
  "base64ct",
  "bitflags 2.13.2",
+ "brotli",
  "buf-read-ext",
  "bytes",
  "cbc",
@@ -9784,6 +9817,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree_magic_mini"
+version = "3.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8765b90061cba6c22b5831f675da109ae5561588290f9fa2317adab2714d5a6"
+dependencies = [
+ "memchr",
+ "nom 8.0.0",
+ "petgraph",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9818,6 +9862,26 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "udmf"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12c8d635b4210133f8b5b5c2c70475326319ee0692756bbf61248574f48c8c0e"
+dependencies = [
+ "ohos-sys-opaque-types",
+ "thiserror 2.0.21",
+ "udmf-sys",
+]
+
+[[package]]
+name = "udmf-sys"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df7a0b7922a95eb8b827746d7f2d8f623331ab416aca833edd177e0775f961e"
+dependencies = [
+ "ohos-sys-opaque-types",
+]
 
 [[package]]
 name = "uluru"
@@ -10985,6 +11049,24 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "wl-clipboard-rs"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d7888ccd4896447b2d14d3a9350a85df2aeb6f181e2e7a31349d104ac46cac1"
+dependencies = [
+ "libc",
+ "log",
+ "os_pipe",
+ "rustix 1.1.5",
+ "thiserror 2.0.21",
+ "tree_magic_mini",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
 ]
 
 [[package]]

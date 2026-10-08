@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>буфер</title>
+<input id="a" style="width:300px;height:40px;font-size:24px" autofocus>
+<br><br>
+<input id="b" style="width:300px;height:40px;font-size:24px">
+<script>
+  function upd() { document.title = 'a=' + document.getElementById('a').value + ';b=' + document.getElementById('b').value; }
+  document.addEventListener('input', upd);
+  document.getElementById('a').focus();
+</script>
