@@ -38,6 +38,10 @@ pub struct Device {
     pub revoked: bool,
     #[serde(default)]
     pub role: Role,
+    /// Куда выходит трафик этого клиента: `None` — по режиму узла (`exit` в node.toml); `"local"` — всегда с самого узла;
+    /// иначе — метка домашнего выхода (только через него, а если он не подключён — отказ).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_via: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -157,6 +161,7 @@ impl DeviceStore {
             created: now_unix(),
             revoked: false,
             role,
+            exit_via: None,
         };
         registry.devices.push(device.clone());
         self.persist(&registry)?;
@@ -194,6 +199,43 @@ impl DeviceStore {
             .registry
             .devices
             .clone())
+    }
+
+    /// Задаёт выход клиентского устройства (`None` — по режиму узла, `Some("local")`, `Some(метка)`).
+    pub fn set_exit_via(&self, name: &str, exit_via: Option<String>) -> Result<()> {
+        self.reload(true)?;
+        let mut registry = {
+            let cache = self.cache.lock().expect("mutex реестра");
+            Registry {
+                devices: cache.registry.devices.clone(),
+            }
+        };
+        let device = registry
+            .devices
+            .iter_mut()
+            .find(|d| d.name == name && !d.revoked)
+            .ok_or_else(|| Error::NoSuchDevice(name.to_owned()))?;
+        device.exit_via = exit_via.filter(|v| !v.trim().is_empty());
+        self.persist(&registry)?;
+        self.cache.lock().expect("mutex реестра").registry = registry;
+        Ok(())
+    }
+
+    /// Устройство по идентификатору (только не отозванное).
+    pub fn find_by_id(&self, id: &str) -> Option<Device> {
+        let _ = self.reload(false);
+        let cache = self.cache.lock().expect("mutex реестра");
+        cache
+            .registry
+            .devices
+            .iter()
+            .find(|d| !d.revoked && d.id == id)
+            .cloned()
+    }
+
+    /// Каталог реестра (там же лежит node.toml).
+    pub fn dir(&self) -> Option<&Path> {
+        self.path.parent()
     }
 
     /// Устройство по токену (только не отозванное).

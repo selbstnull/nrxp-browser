@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use netrunner_core::Identity;
 use netrunner_core::net::{
-    AuthValidator, Connection, NetworkConfig, ReverseEgressRegistry, ServerHandler, SessionManager,
-    TunnelHandler, run_datagram_listener,
+    AuthValidator, Connection, ExitChoice, ExitPolicy, NetworkConfig, ReverseEgressRegistry,
+    ServerHandler, SessionManager, TunnelHandler, run_datagram_listener,
 };
 use tokio::net::{TcpListener, TcpSocket, UdpSocket};
 use tokio::task::JoinHandle;
@@ -20,6 +20,22 @@ use crate::{Error, NodeFile, Result};
 
 /// Как часто проверять, не отозвали ли устройство с живой сессией.
 const REVOKE_SWEEP: Duration = Duration::from_secs(2);
+
+/// Выход клиента по реестру устройств: `exit_via` устройства (метка выхода или `local`), иначе — режим узла.
+struct DeviceExitPolicy(Arc<DeviceStore>);
+
+impl ExitPolicy for DeviceExitPolicy {
+    fn choice_for(&self, user_id: Option<&str>) -> ExitChoice {
+        let Some(device) = user_id.and_then(|id| self.0.find_by_id(id)) else {
+            return ExitChoice::Default;
+        };
+        match device.exit_via.as_deref() {
+            None | Some("") => ExitChoice::Default,
+            Some("local") => ExitChoice::Local,
+            Some(label) => ExitChoice::Egress(label.to_owned()),
+        }
+    }
+}
 
 /// Работающий ingress. `shutdown` останавливает приём и ждёт завершения задачи приёма.
 pub struct IngressHandle {
@@ -95,6 +111,7 @@ pub async fn run_ingress(node: &NodeFile, store: Arc<DeviceStore>) -> Result<Ing
     let validator: Arc<dyn AuthValidator> = auth.clone();
     let token = CancellationToken::new();
     let egress = ReverseEgressRegistry::new(node.exit_mode()?);
+    egress.set_policy(Some(Arc::new(DeviceExitPolicy(store.clone()))));
 
     // UDP-нога на том же адресе и порту: опциональна, при неудаче клиенты остаются на TCP (как в netrunner-server).
     match UdpSocket::bind(local_addr).await {
@@ -107,6 +124,36 @@ pub async fn run_ingress(node: &NodeFile, store: Arc<DeviceStore>) -> Result<Ing
             });
         }
         Err(error) => tracing::warn!(%error, "UDP-нога не поднялась, работаем только по TCP"),
+    }
+
+    // Режим выхода (`exit` в node.toml) читается заново при изменении файла — перезапуск узла не нужен.
+    if let Some(dir) = store.dir().map(std::path::Path::to_path_buf) {
+        let (registry, t) = (egress.clone(), token.clone());
+        tokio::spawn(async move {
+            let path = crate::NodeFile::path(&dir);
+            let mut last = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            loop {
+                tokio::select! {
+                    _ = t.cancelled() => return,
+                    _ = tokio::time::sleep(REVOKE_SWEEP) => {}
+                }
+                let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                if stamp == last {
+                    continue;
+                }
+                last = stamp;
+                match crate::NodeFile::load(&dir).and_then(|n| n.exit_mode()) {
+                    Ok(mode) if mode != registry.mode() => {
+                        tracing::info!(?mode, "режим выхода клиентов изменён");
+                        registry.set_mode(mode);
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, "node.toml не разобран — режим выхода не менялся")
+                    }
+                }
+            }
+        });
     }
 
     // Отзыв: закрываем живые сессии отозванных устройств (токен проверяется только при установке сессии).

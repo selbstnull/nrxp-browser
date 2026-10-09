@@ -78,6 +78,7 @@ impl Fixture {
             &EgressOptions {
                 label: "дом".into(),
                 allow_private: allow_lan,
+                ..Default::default()
             },
             Duration::from_secs(5),
         )
@@ -194,6 +195,7 @@ async fn roles_do_not_mix() {
         &EgressOptions {
             label: "дом".into(),
             allow_private: true,
+            ..Default::default()
         },
         Duration::from_secs(5),
     )
@@ -217,5 +219,139 @@ async fn revoking_the_egress_removes_it_from_routes() {
     f.wait_live(0).await;
     // Остальные клиенты и сам узел живы: клиент по-прежнему подключён, но выхода у него теперь нет.
     assert!(echo_roundtrip(&client, f.echo_port).await.is_err());
+    f.ingress.shutdown().await;
+}
+
+impl Fixture {
+    async fn client_named(&self, name: &str) -> NrxpTransport {
+        let (_, token) = self.store.add_device(name).unwrap();
+        NrxpTransport::connect(&self.config(&token)).await.unwrap()
+    }
+
+    fn dir(&self) -> &std::path::Path {
+        self._dir.path()
+    }
+}
+
+/// Пока `echo_roundtrip` не даст ожидаемого результата (устройство читается заново на каждом потоке, но поток уже открытой
+/// сессии может быть в пути) — не дольше 8 с.
+async fn eventually(expect_ok: bool, transport: &NrxpTransport, port: u16) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if echo_roundtrip(transport, port).await.is_ok() == expect_ok {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exit_follows_the_device_not_only_the_node_mode() {
+    let f = fixture("require").await;
+    let local = f.client_named("локальный").await;
+    let other = f.client_named("обычный").await;
+    f.store
+        .set_exit_via("локальный", Some("local".into()))
+        .unwrap();
+
+    // Без выхода: «локальный» идёт с узла, «обычный» — отказ (режим require).
+    assert!(
+        eventually(true, &local, f.echo_port).await,
+        "local-устройство должно работать без выхода"
+    );
+    assert!(
+        eventually(false, &other, f.echo_port).await,
+        "остальные — отказ без выхода"
+    );
+
+    // «обычный» привязан к метке «дом», которой нет: отказ, а не выход с узла.
+    f.store.set_exit_via("обычный", Some("дом".into())).unwrap();
+    assert!(eventually(false, &other, f.echo_port).await);
+
+    // Появился выход «дом» — привязанное устройство идёт через него.
+    let _egress = f.start_egress(true).await;
+    assert!(
+        eventually(true, &other, f.echo_port).await,
+        "привязанное к метке устройство работает через выход"
+    );
+
+    // Сброс привязки: снова по режиму узла (require) — через тот же выход.
+    f.store.set_exit_via("обычный", None).unwrap();
+    assert!(eventually(true, &other, f.echo_port).await);
+    f.ingress.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exit_mode_is_reloaded_from_node_toml_without_restart() {
+    let f = fixture("require").await;
+    let client = f.client_named("клиент").await;
+    assert!(
+        eventually(false, &client, f.echo_port).await,
+        "require без выхода — отказ"
+    );
+
+    let mut node = f.node.clone();
+    node.exit = "local".into();
+    node.save(f.dir()).unwrap();
+    assert!(
+        eventually(true, &client, f.echo_port).await,
+        "после смены exit на local узел должен сам начать выпускать трафик"
+    );
+
+    node.exit = "require".into();
+    node.save(f.dir()).unwrap();
+    assert!(
+        eventually(false, &client, f.echo_port).await,
+        "и обратно — снова отказ"
+    );
+
+    // Ошибочное значение не ломает работающий режим.
+    let text = std::fs::read_to_string(nrb_node::NodeFile::path(f.dir()))
+        .unwrap()
+        .replace("exit = \"require\"", "exit = \"мусор\"");
+    std::fs::write(nrb_node::NodeFile::path(f.dir()), text).unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        echo_roundtrip(&client, f.echo_port).await.is_err(),
+        "режим не должен сброситься на local из-за ошибки"
+    );
+    f.ingress.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn egress_flow_limit_applies_to_clients() {
+    let f = fixture("require").await;
+    let (_, token) = f.store.add_device_with_role("дом", Role::Egress).unwrap();
+    let _egress = Egress::start(
+        &f.config(&token),
+        &EgressOptions {
+            label: "дом".into(),
+            allow_private: true,
+            max_streams: Some(1),
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    f.wait_live(1).await;
+    let client = f.client().await;
+
+    // Первый поток держим открытым (эхо ждёт данных), второй — сверх лимита.
+    let mut first = client.open_tcp("127.0.0.1", f.echo_port).await.unwrap();
+    first.write_all(b"ping").await.unwrap();
+    let mut buf = [0u8; 4];
+    first.read_exact(&mut buf).await.unwrap();
+    assert!(
+        echo_roundtrip(&client, f.echo_port).await.is_err(),
+        "второй одновременный поток сверх max_streams=1 должен быть отклонён"
+    );
+    drop(first);
+    assert!(
+        eventually(true, &client, f.echo_port).await,
+        "после закрытия первого слот освободился"
+    );
     f.ingress.shutdown().await;
 }

@@ -17,6 +17,8 @@ pub struct EgressOptions {
     pub label: String,
     /// Разрешить цели в локальной сети этого устройства. По умолчанию нет.
     pub allow_private: bool,
+    /// Максимум одновременных потоков, которые выход обслуживает; лишние отклоняются. `None` — без лимита.
+    pub max_streams: Option<usize>,
 }
 
 /// Работающий выход. Пока объект жив, сессия держится и переподключается ядром.
@@ -44,6 +46,7 @@ impl Egress {
             identity,
             EgressPolicy {
                 allow_private: options.allow_private,
+                max_streams: options.max_streams,
             },
         )
         .await

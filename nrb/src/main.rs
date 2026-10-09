@@ -153,6 +153,9 @@ enum Command {
         /// Разрешить цели в локальной сети этого устройства (127.0.0.1, 192.168.*, …). По умолчанию запрещено.
         #[arg(long)]
         allow_lan: bool,
+        /// Максимум одновременных потоков, которые выход обслуживает (лишние отклоняются). По умолчанию без лимита.
+        #[arg(long)]
+        max_streams: Option<usize>,
     },
     /// Блокировщик рекламы: скачать списки фильтров, показать состояние.
     Adblock {
@@ -250,7 +253,8 @@ fn main() {
             node,
             label,
             allow_lan,
-        }) => node::egress(&node, label, allow_lan),
+            max_streams,
+        }) => node::egress(&node, label, allow_lan, max_streams),
         Some(Command::Adblock { command }) => adblock::run(command),
         Some(Command::HermeticSelftest { node, host_port }) => hermetic::selftest(&node, host_port),
         Some(Command::Version) => {

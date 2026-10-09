@@ -54,6 +54,21 @@ pub enum NodeCommand {
         #[command(flatten)]
         dir: DirArg,
     },
+    /// Выход трафика устройства: `local` (с самого узла), метка домашнего выхода или `default` (по режиму узла).
+    Exit {
+        #[command(flatten)]
+        dir: DirArg,
+        /// Имя устройства.
+        device: String,
+        /// `local` | `default` | метка выхода (имя из `nrb egress --label`).
+        via: String,
+    },
+    /// Режим выхода клиентов узла: `local`, `prefer` (через домашний выход, если подключён) или `require` (только через него).
+    Mode {
+        #[command(flatten)]
+        dir: DirArg,
+        mode: String,
+    },
     /// Отозвать устройство: токен перестаёт работать, живая сессия закрывается.
     Revoke {
         #[command(flatten)]
@@ -135,12 +150,16 @@ fn execute(command: NodeCommand) -> Result<(), String> {
             }
             for device in devices {
                 println!(
-                    "{}  {:<24} {:<8} {}",
+                    "{}  {:<24} {:<8} {:<10} {}",
                     device.id,
                     device.name,
                     match device.role {
                         Role::Client => "клиент",
                         Role::Egress => "выход",
+                    },
+                    match (device.role, device.exit_via.as_deref()) {
+                        (Role::Client, Some(via)) => format!("→ {via}"),
+                        _ => String::new(),
                     },
                     if device.revoked {
                         "ОТОЗВАНО"
@@ -149,6 +168,34 @@ fn execute(command: NodeCommand) -> Result<(), String> {
                     }
                 );
             }
+            Ok(())
+        }
+        NodeCommand::Exit { dir, device, via } => {
+            let store = DeviceStore::open(&dir.resolve()?).map_err(|e| e.to_string())?;
+            let value = match via.as_str() {
+                "default" | "" => None,
+                other => Some(other.to_owned()),
+            };
+            store
+                .set_exit_via(&device, value.clone())
+                .map_err(|e| e.to_string())?;
+            println!(
+                "«{device}»: выход — {}. Работающий узел подхватит изменение сам.",
+                value.as_deref().unwrap_or("по режиму узла")
+            );
+            Ok(())
+        }
+        NodeCommand::Mode { dir, mode } => {
+            let dir = dir.resolve()?;
+            let mut node = NodeFile::load(&dir).map_err(|e| e.to_string())?;
+            let previous = std::mem::replace(&mut node.exit, mode.clone());
+            if let Err(error) = node.exit_mode() {
+                return Err(format!("{error}"));
+            }
+            node.save(&dir).map_err(|e| e.to_string())?;
+            println!(
+                "режим выхода: {previous} → {mode}. Работающий узел подхватит его в течение нескольких секунд."
+            );
             Ok(())
         }
         NodeCommand::Revoke { dir, name } => {
@@ -241,7 +288,12 @@ async fn wait_for_shutdown() {
 }
 
 /// `nrb egress <ссылка|конфиг>`: домашний выход. Держит сессию с ingress до Ctrl+C или отзыва токена.
-pub fn egress(node: &str, label: Option<String>, allow_lan: bool) -> i32 {
+pub fn egress(
+    node: &str,
+    label: Option<String>,
+    allow_lan: bool,
+    max_streams: Option<usize>,
+) -> i32 {
     let (config, default_label) = if node.starts_with("nrxp://") {
         match Invite::parse(node) {
             Ok(invite) => {
@@ -265,6 +317,7 @@ pub fn egress(node: &str, label: Option<String>, allow_lan: bool) -> i32 {
     let options = EgressOptions {
         label: label.unwrap_or(default_label),
         allow_private: allow_lan,
+        max_streams,
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
