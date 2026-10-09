@@ -1,0 +1,535 @@
+From 539bcf25dfd76fd0c2797010fe0b3cf787dca329 Mon Sep 17 00:00:00 2001
+From: nineap <trkir21@gmail.com>
+Date: Fri, 9 Oct 2026 22:37:56 +0700
+Subject: [PATCH] =?UTF-8?q?feat(core):=20reverse=20egress=20=E2=80=94=20?=
+ =?UTF-8?q?=D0=B2=D1=8B=D1=85=D0=BE=D0=B4=20=D0=BF=D0=BE=20=D0=BA=D0=BB?=
+ =?UTF-8?q?=D0=B8=D0=B5=D0=BD=D1=82=D1=83=20(ExitPolicy)=20=D0=B8=20=D0=BB?=
+ =?UTF-8?q?=D0=B8=D0=BC=D0=B8=D1=82=20=D0=BF=D0=BE=D1=82=D0=BE=D0=BA=D0=BE?=
+ =?UTF-8?q?=D0=B2=20=D0=BD=D0=B0=20=D0=B2=D1=8B=D1=85=D0=BE=D0=B4=D0=B5?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ExitPolicy/ExitChoice: узел решает для каждого клиента (по user_id валидатора), идти ли локально, по режиму или строго через выход с
+заданной меткой (метки нет — отказ, без отката на ingress). EgressPolicy::max_streams: лишние потоки отклоняются (Close), слот
+держится до конца потока. Тесты: 3 новых, всего в ядре 255.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ core/src/net/connection/connection.rs     | 186 +++++++++++++++++++++-
+ core/src/net/connection/handler.rs        |  43 +++--
+ core/src/net/connection/mod.rs            |   4 +-
+ core/src/net/connection/reverse_egress.rs | 101 ++++++++++++
+ core/src/net/mod.rs                       |   4 +-
+ 5 files changed, 317 insertions(+), 21 deletions(-)
+
+diff --git a/core/src/net/connection/connection.rs b/core/src/net/connection/connection.rs
+index ac3c622..19e5c82 100644
+--- a/core/src/net/connection/connection.rs
++++ b/core/src/net/connection/connection.rs
+@@ -1631,7 +1631,7 @@ impl ClientHandler {
+         identity: &Option<Identity>,
+         data_cipher_preference: DataCipherPreference,
+         mesh_route_preference: crate::net::MeshRoutePreference,
+-        egress: &Option<Arc<crate::net::EgressPolicy>>,
++        egress: &Option<Arc<super::reverse_egress::EgressRuntime>>,
+     ) -> Result<(), AppError> {
+         let leg_name = format!("TCP-Leg-{}", leg_id);
+ 
+@@ -1930,7 +1930,7 @@ impl ClientHandler {
+             false,
+             DataCipherPreference::Auto,
+             crate::net::MeshRoutePreference::ServerDefault,
+-            Some(Arc::new(policy)),
++            Some(super::reverse_egress::EgressRuntime::new(policy)),
+         )
+         .await?;
+         let weak = Arc::downgrade(&muxer);
+@@ -1954,7 +1954,7 @@ impl ClientHandler {
+         strong_privacy: bool,
+         data_cipher_preference: DataCipherPreference,
+         mesh_route_preference: crate::net::MeshRoutePreference,
+-        egress: Option<Arc<crate::net::EgressPolicy>>,
++        egress: Option<Arc<super::reverse_egress::EgressRuntime>>,
+     ) -> Result<Arc<Muxer>, AppError> {
+         let decoy_sni: Arc<str> = decoy_sni.into();
+         let auth_token: Arc<str> = auth_token.unwrap_or_default().into();
+@@ -3641,7 +3641,7 @@ mod tests {
+                 ));
+             }
+             Ok(crate::net::UserQuota {
+-                user_id: "user".into(),
++                user_id: _token.into(),
+                 limit_bytes: None,
+                 used_bytes: 0,
+             })
+@@ -4290,6 +4290,8 @@ mod tests {
+             None,
+             EgressPolicy {
+                 allow_private: true,
++
++                ..Default::default()
+             },
+         )
+         .await
+@@ -4386,6 +4388,8 @@ mod tests {
+             None,
+             EgressPolicy {
+                 allow_private: true,
++
++                ..Default::default()
+             },
+         )
+         .await
+@@ -4430,4 +4434,178 @@ mod tests {
+         assert!(egress.is_fatal(), "the ingress must reject the token");
+         assert!(registry.live().is_empty());
+     }
++
++    // ---------- reverse egress: per-client exit and flow limit ----------
++
++    struct TestPolicy(Vec<(&'static str, crate::net::ExitChoice)>);
++
++    impl crate::net::ExitPolicy for TestPolicy {
++        fn choice_for(&self, user_id: Option<&str>) -> crate::net::ExitChoice {
++            self.0
++                .iter()
++                .find(|(user, _)| Some(*user) == user_id)
++                .map_or(crate::net::ExitChoice::Default, |(_, c)| c.clone())
++        }
++    }
++
++    async fn connect_client_raw_as(
++        addr: std::net::SocketAddr,
++        token: &str,
++    ) -> (
++        Arc<Muxer>,
++        mpsc::Sender<RawCastFrame>,
++        mpsc::Receiver<RawCastFrame>,
++    ) {
++        let (tx_to_engine, rx_from_tunnel) = mpsc::channel(256);
++        let (tx_to_tunnel, rx_from_engine) = mpsc::channel(256);
++        let muxer = ClientHandler::connect(
++            &addr.to_string(),
++            "example.com",
++            Some(token.into()),
++            None,
++            rx_from_engine,
++            tx_to_engine,
++        )
++        .await
++        .unwrap();
++        (muxer, tx_to_tunnel, rx_from_tunnel)
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++    async fn exit_policy_sends_a_client_local_while_others_are_refused() {
++        use crate::net::{ExitChoice, ExitMode, ReverseEgressRegistry};
++        let registry = ReverseEgressRegistry::new(ExitMode::Require);
++        registry.set_policy(Some(Arc::new(TestPolicy(vec![(
++            "local-user",
++            ExitChoice::Local,
++        )]))));
++        let addr = spawn_ingress_with_registry(registry).await;
++        let target = spawn_burst_target(4096, 1024).await;
++
++        let (a, to_a, mut from_a) = connect_client_raw_as(addr, "local-user").await;
++        wait_for_legs(&a).await;
++        let (got, _) = fetch_via_client(&to_a, &mut from_a, target).await;
++        assert_eq!(got, 4096, "a Local client exits from the ingress even in Require mode");
++
++        let (b, to_b, mut from_b) = connect_client_raw_as(addr, "someone-else").await;
++        wait_for_legs(&b).await;
++        let (got, closed) = fetch_via_client(&to_b, &mut from_b, target).await;
++        assert_eq!(got, 0, "everybody else still fails closed without an egress");
++        assert!(closed);
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++    async fn exit_policy_can_pin_a_client_to_a_labeled_egress() {
++        use crate::net::{EgressPolicy, ExitChoice, ExitMode, ReverseEgressRegistry};
++        let registry = ReverseEgressRegistry::new(ExitMode::Local);
++        registry.set_policy(Some(Arc::new(TestPolicy(vec![
++            ("pinned", ExitChoice::Egress("home".into())),
++            ("ghost", ExitChoice::Egress("nowhere".into())),
++        ]))));
++        let addr = spawn_ingress_with_registry(registry.clone()).await;
++        let target = spawn_burst_target(4096, 1024).await;
++        let egress = ClientHandler::connect_egress(
++            &addr.to_string(),
++            "example.com",
++            Some("egress-token".into()),
++            "home",
++            None,
++            EgressPolicy {
++                allow_private: true,
++                ..Default::default()
++            },
++        )
++        .await
++        .unwrap();
++        wait_for_legs(&egress).await;
++        for _ in 0..100 {
++            if !registry.live().is_empty() {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++
++        let (p, to_p, mut from_p) = connect_client_raw_as(addr, "pinned").await;
++        wait_for_legs(&p).await;
++        let (got, _) = fetch_via_client(&to_p, &mut from_p, target).await;
++        assert_eq!(got, 4096, "a client pinned to a live label exits through it");
++
++        let (g, to_g, mut from_g) = connect_client_raw_as(addr, "ghost").await;
++        wait_for_legs(&g).await;
++        let (got, closed) = fetch_via_client(&to_g, &mut from_g, target).await;
++        assert_eq!(got, 0, "a client pinned to a missing label is refused, not sent elsewhere");
++        assert!(closed);
++
++        // A client without a pin follows the mode (Local here) and exits from the ingress.
++        let (d, to_d, mut from_d) = connect_client_raw_as(addr, "default-user").await;
++        wait_for_legs(&d).await;
++        let (got, _) = fetch_via_client(&to_d, &mut from_d, target).await;
++        assert_eq!(got, 4096);
++    }
++
++    /// A target that accepts connections and keeps them open without sending anything.
++    async fn spawn_hold_target() -> std::net::SocketAddr {
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = listener.local_addr().unwrap();
++        tokio::spawn(async move {
++            let mut held = Vec::new();
++            while let Ok((sock, _)) = listener.accept().await {
++                held.push(sock);
++            }
++        });
++        addr
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++    async fn egress_flow_limit_refuses_the_extra_flow_and_keeps_the_first() {
++        use crate::net::{EgressPolicy, ExitMode, ReverseEgressRegistry};
++        let registry = ReverseEgressRegistry::new(ExitMode::Require);
++        let addr = spawn_ingress_with_registry(registry.clone()).await;
++        let target = spawn_hold_target().await;
++        let egress = ClientHandler::connect_egress(
++            &addr.to_string(),
++            "example.com",
++            Some("jwt".into()),
++            "home",
++            None,
++            EgressPolicy {
++                allow_private: true,
++                max_streams: Some(1),
++            },
++        )
++        .await
++        .unwrap();
++        wait_for_legs(&egress).await;
++        for _ in 0..100 {
++            if !registry.live().is_empty() {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        let (client, to_tunnel, mut from_tunnel) = connect_client_raw(addr).await;
++        wait_for_legs(&client).await;
++
++        for id in 1..=2u64 {
++            let mut connect = RawCastFrame::connect(
++                LocalProtocol::Tcp,
++                id,
++                std::net::Ipv4Addr::LOCALHOST,
++                target.port(),
++            );
++            connect.payload = Bytes::from(target.to_string());
++            to_tunnel.send(connect).await.unwrap();
++        }
++        let mut closed = std::collections::HashSet::new();
++        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
++        while let Ok(Some(frame)) = tokio::time::timeout_at(deadline, from_tunnel.recv()).await {
++            if matches!(frame.event, crate::rawcast::RawCastEvent::Close) {
++                closed.insert(frame.socket_id);
++            }
++        }
++        assert_eq!(
++            closed.len(),
++            1,
++            "exactly one of the two flows must be refused by the limit, closed: {closed:?}"
++        );
++    }
+ }
+diff --git a/core/src/net/connection/handler.rs b/core/src/net/connection/handler.rs
+index 05236aa..68fd33c 100644
+--- a/core/src/net/connection/handler.rs
++++ b/core/src/net/connection/handler.rs
+@@ -53,7 +53,7 @@ pub struct RemoteOpener {
+     /// Ingress side: reverse-egress sessions that may carry this client's flows.
+     pub reverse_egress: Option<Arc<super::ReverseEgressRegistry>>,
+     /// Egress side of a reverse-egress session: what targets may be dialed.
+-    pub egress_policy: Option<Arc<super::EgressPolicy>>,
++    pub(crate) egress_policy: Option<Arc<super::reverse_egress::EgressRuntime>>,
+ }
+ 
+ impl RemoteOpener {
+@@ -95,10 +95,10 @@ impl RemoteOpener {
+             return;
+         }
+         if let Some(registry) = self.reverse_egress.as_ref() {
+-            use super::ExitMode;
+-            match (registry.mode(), registry.pick()) {
+-                (ExitMode::Local, _) | (ExitMode::Prefer, None) => {}
+-                (_, Some(session)) => {
++            use super::reverse_egress::Pick;
++            match registry.pick_for(self.muxer.quota_user_id().as_deref()) {
++                Pick::Local => {}
++                Pick::Via(session) => {
+                     tokio::spawn(Self::open_via_reverse_egress(
+                         self.muxer.clone(),
+                         session,
+@@ -109,8 +109,8 @@ impl RemoteOpener {
+                     ));
+                     return;
+                 }
+-                // Require without a live egress: fail closed, never exit from here.
+-                (ExitMode::Require, None) => {
++                // A remote exit is required but unavailable: fail closed, never exit from here.
++                Pick::Refuse => {
+                     self.reject_stream(stream_id, token).await;
+                     return;
+                 }
+@@ -149,12 +149,11 @@ impl RemoteOpener {
+             return;
+         }
+         if let Some(registry) = self.reverse_egress.as_ref() {
+-            use super::ExitMode;
+-            let remote_exit = match registry.mode() {
+-                ExitMode::Local => false,
+-                ExitMode::Prefer => registry.pick().is_some(),
+-                ExitMode::Require => true,
+-            };
++            use super::reverse_egress::Pick;
++            let remote_exit = !matches!(
++                registry.pick_for(self.muxer.quota_user_id().as_deref()),
++                Pick::Local
++            );
+             if remote_exit {
+                 self.reject_stream(stream_id, token).await;
+                 return;
+@@ -364,6 +363,22 @@ impl RemoteOpener {
+                 return;
+             }
+ 
++            // Reverse-egress dialer: honour the flow limit (the slot is held until the flow ends).
++            let _slot = match &egress_policy {
++                Some(runtime) => match runtime.try_acquire() {
++                    Some(slot) => Some(slot),
++                    None => {
++                        warn!(stream_id, "⚠️ [Egress] flow limit reached, refusing");
++                        let _ = muxer
++                            .send_control(stream_id, FrameType::Close, Bytes::new())
++                            .await;
++                        muxer.remove_stream(stream_id);
++                        return;
++                    }
++                },
++                None => None,
++            };
++
+             // Приватность: НЕ логируем `target` (хост, к которому идёт пользователь)
+             // — это ровно та информация о его активности, которую прокси не должен
+             // хранить нигде. `stream_id` достаточно для локальной корреляции.
+@@ -377,7 +392,7 @@ impl RemoteOpener {
+                 }
+                 connect_res = tokio::time::timeout(Duration::from_secs(7), async {
+                     match &egress_policy {
+-                        Some(policy) => policy.connect(&target).await,
++                        Some(runtime) => runtime.policy.connect(&target).await,
+                         None => TcpStream::connect(&target).await,
+                     }
+                 }) => {
+diff --git a/core/src/net/connection/mod.rs b/core/src/net/connection/mod.rs
+index 3446e44..4265678 100644
+--- a/core/src/net/connection/mod.rs
++++ b/core/src/net/connection/mod.rs
+@@ -28,4 +28,6 @@ pub(crate) use connection::{mesh_process_uptime_ms, MeshPeerSession};
+ pub use connection::{ClientHandler, Connection, ServerHandler, SessionManager, TunnelHandler};
+ pub use dgram_engine::run_datagram_listener;
+ pub use muxer::{Muxer, GLOBAL_MIN_RTT};
+-pub use reverse_egress::{EgressPolicy, ExitMode, ReverseEgressRegistry, EGRESS_TOKEN_PREFIX};
++pub use reverse_egress::{
++    EgressPolicy, ExitChoice, ExitMode, ExitPolicy, ReverseEgressRegistry, EGRESS_TOKEN_PREFIX,
++};
+diff --git a/core/src/net/connection/reverse_egress.rs b/core/src/net/connection/reverse_egress.rs
+index e98de0f..286fef6 100644
+--- a/core/src/net/connection/reverse_egress.rs
++++ b/core/src/net/connection/reverse_egress.rs
+@@ -13,6 +13,7 @@
+ 
+ use std::io;
+ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
++use std::sync::atomic::{AtomicUsize, Ordering};
+ use std::sync::{Arc, Mutex};
+ 
+ use tokio::net::TcpStream;
+@@ -27,6 +28,42 @@ pub const EGRESS_TOKEN_PREFIX: &str = "egress:";
+ pub struct EgressPolicy {
+     /// Allow loopback/private/link-local targets (the egress's own LAN). Off by default.
+     pub allow_private: bool,
++    /// Maximum number of flows this egress serves at the same time; further flows are refused. `None` means unlimited.
++    pub max_streams: Option<usize>,
++}
++
++/// An [`EgressPolicy`] plus the live flow counter shared by all legs of one egress session.
++pub(crate) struct EgressRuntime {
++    pub(crate) policy: EgressPolicy,
++    active: AtomicUsize,
++}
++
++/// One flow slot; released on drop.
++pub(crate) struct StreamSlot(Arc<EgressRuntime>);
++
++impl Drop for StreamSlot {
++    fn drop(&mut self) {
++        self.0.active.fetch_sub(1, Ordering::SeqCst);
++    }
++}
++
++impl EgressRuntime {
++    pub(crate) fn new(policy: EgressPolicy) -> Arc<Self> {
++        Arc::new(Self {
++            policy,
++            active: AtomicUsize::new(0),
++        })
++    }
++
++    /// `None` when the flow limit is reached.
++    pub(crate) fn try_acquire(self: &Arc<Self>) -> Option<StreamSlot> {
++        let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
++        if self.policy.max_streams.is_some_and(|max| now > max) {
++            self.active.fetch_sub(1, Ordering::SeqCst);
++            return None;
++        }
++        Some(StreamSlot(self.clone()))
++    }
+ }
+ 
+ impl EgressPolicy {
+@@ -80,6 +117,30 @@ fn is_private_v6(ip: Ipv6Addr) -> bool {
+         || (first & 0xffc0) == 0xfe80 // link-local
+ }
+ 
++/// Per-client routing decision of an [`ExitPolicy`].
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum ExitChoice {
++    /// Follow the registry's [`ExitMode`].
++    Default,
++    /// This client always exits from the ingress itself.
++    Local,
++    /// This client exits only through the egress with this label; without it the flow is refused.
++    Egress(String),
++}
++
++/// Maps a client (the validator's `user_id`) to its exit; implemented by the node, e.g. from its device registry.
++pub trait ExitPolicy: Send + Sync {
++    fn choice_for(&self, user_id: Option<&str>) -> ExitChoice;
++}
++
++/// Where one flow goes.
++pub(crate) enum Pick {
++    Local,
++    Via(Arc<MeshPeerSession>),
++    /// A remote exit is required but unavailable: refuse, never fall back to the ingress.
++    Refuse,
++}
++
+ /// Where flows of the ingress's own clients exit.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum ExitMode {
+@@ -100,6 +161,7 @@ struct Entry {
+ struct Inner {
+     mode: ExitMode,
+     sessions: Vec<Entry>,
++    policy: Option<Arc<dyn ExitPolicy>>,
+ }
+ 
+ /// Live reverse-egress sessions of one ingress.
+@@ -113,6 +175,7 @@ impl ReverseEgressRegistry {
+             inner: Mutex::new(Inner {
+                 mode,
+                 sessions: Vec::new(),
++                policy: None,
+             }),
+         })
+     }
+@@ -125,6 +188,42 @@ impl ReverseEgressRegistry {
+         self.inner.lock().unwrap().mode = mode;
+     }
+ 
++    /// Per-client exit policy, consulted for every new flow. `None`: everybody follows the mode.
++    pub fn set_policy(&self, policy: Option<Arc<dyn ExitPolicy>>) {
++        self.inner.lock().unwrap().policy = policy;
++    }
++
++    /// Decides where a flow of `user_id` goes.
++    pub(crate) fn pick_for(&self, user_id: Option<&str>) -> Pick {
++        let (mode, policy) = {
++            let inner = self.inner.lock().unwrap();
++            (inner.mode, inner.policy.clone())
++        };
++        match policy.map_or(ExitChoice::Default, |p| p.choice_for(user_id)) {
++            ExitChoice::Local => Pick::Local,
++            ExitChoice::Egress(label) => self
++                .pick_labeled(&label)
++                .map_or(Pick::Refuse, Pick::Via),
++            ExitChoice::Default => match (mode, self.pick()) {
++                (ExitMode::Local, _) | (ExitMode::Prefer, None) => Pick::Local,
++                (_, Some(session)) => Pick::Via(session),
++                (ExitMode::Require, None) => Pick::Refuse,
++            },
++        }
++    }
++
++    /// The most recent usable session with this label.
++    fn pick_labeled(&self, label: &str) -> Option<Arc<MeshPeerSession>> {
++        self.inner
++            .lock()
++            .unwrap()
++            .sessions
++            .iter()
++            .rev()
++            .find(|e| e.label == label && e.session.is_usable())
++            .map(|e| e.session.clone())
++    }
++
+     /// Labels of the sessions that can carry flows right now.
+     pub fn live(&self) -> Vec<String> {
+         self.inner
+@@ -208,6 +307,8 @@ mod tests {
+     fn lan_opt_in_allows_private_but_not_unspecified_or_multicast() {
+         let policy = EgressPolicy {
+             allow_private: true,
++
++            ..Default::default()
+         };
+         assert!(policy.address_allowed(ip("192.168.1.1")));
+         assert!(policy.address_allowed(ip("127.0.0.1")));
+diff --git a/core/src/net/mod.rs b/core/src/net/mod.rs
+index 6f9a2a6..4dfd767 100644
+--- a/core/src/net/mod.rs
++++ b/core/src/net/mod.rs
+@@ -67,8 +67,8 @@ pub use credit::{
+ };
+ #[cfg(not(target_arch = "wasm32"))]
+ pub use connection::{
+-    run_datagram_listener, ClientHandler, Connection, EgressPolicy, ExitMode, Muxer,
+-    ReverseEgressRegistry, ServerHandler, SessionManager, TunnelHandler, BUF_CAP,
++    run_datagram_listener, ClientHandler, Connection, EgressPolicy, ExitChoice, ExitMode, ExitPolicy,
++    Muxer, ReverseEgressRegistry, ServerHandler, SessionManager, TunnelHandler, BUF_CAP,
+     EGRESS_TOKEN_PREFIX, GLOBAL_MIN_RTT,
+ };
+ pub use constants::*;
+-- 
+2.43.0
+
