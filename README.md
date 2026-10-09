@@ -16,18 +16,21 @@
 
 | Что | Состояние |
 |---|---|
-| Рендер и открытие сайтов (Servo, headless-снимок и окно с вкладками) | работает; на корпусе из 57 сайтов открывается ~90–98% (часть — «partial»), JS-тяжёлые SPA и антибот — проблемные |
-| Весь трафик движка через NRXP без TUN/root (локальный HTTP-CONNECT прокси + `NrxpTransport`) | работает на dev-узле; утечек в обход туннеля при проверенных сценариях не найдено (WebSocket в Servo обходил прокси — исправлено патчем Servo) |
+| Рендер и открытие сайтов (Servo, headless-снимок и окно с вкладками) | работает; корпус из 57 сайтов: 44/52 ok (84,6%) в debug, 46/52 (88,5%) в release, открывается 98–100% (часть — «partial»); антибот (Cloudflare, eBay), SSO-прослойка Яндекса, тяжёлые SPA — проблемные |
+| Весь трафик движка через NRXP без TUN/root: Servo открывает TCP-соединения через `NetworkConnector` встраивателя (форк `nrxp-servo`) → `NrxpTransport` → узел; имена хостов не резолвятся локально | работает на dev- и собственном узле; сокетов движка мимо туннеля не найдено (leakwatch по pid, HTTP(S) и WebSocket) |
 | Диалоги страницы, `<select>`, контекстное меню, HTTP-авторизация, русские страницы ошибок | работает (GUI-сценарии в Xephyr) |
 | Профиль: куки/localStorage/IndexedDB, история, закладки, восстановление вкладок, настройки | работает |
 | Собственный узел: `nrb node init/run/invite/devices/revoke`, `nrb pair` (без бэкенда), окно «Узлы» в браузере (Ctrl+Shift+N: спаривание, выбор узла, свой узел, приглашения) | работает на loopback (тесты + `scripts/node-e2e.sh`, `scripts/gui-nodes.sh`: спаривание, отзыв, decoy, `snap` через свой узел); не проверено на реальном VPS; нет QR-кода |
 | Деплой узла на VPS по SSH (`nrb deploy`) | работает на тестовом контейнере (systemd + sshd: установка, апгрейд, откат, удаление); **на реальном VPS не проверялось** |
-| Reverse-egress (домашний `nrb` за NAT как выход: `nrb egress`, `nrb node invite --egress`, `exit = "require"`) | работает на loopback (3 процесса, `scripts/egress-e2e.sh`, тесты ядра); требует **патч ядра** `patches/proxy/0002` (не запушен, без ревью); не проверено на двух реальных хостах; нет лимитов, выбор выхода — один на узел |
+| Reverse-egress (домашний `nrb` за NAT как выход: `nrb egress`, `nrb node invite --egress`, `exit = "require"`) | работает на loopback (3 процесса, `scripts/egress-e2e.sh`, тесты ядра); требует **патч ядра** `patches/proxy/0002` (не запушен, без ревью); не проверено на двух реальных хостах; выход выбирается по устройству (`nrb node exit`), режим `exit` меняется на лету, лимит потоков на выходе (`--max-streams`); нет ограничения полосы и учёта трафика; патч ядра `0003` тоже не запушен |
 | HTTP/3 поверх NRXP | не начато; в ядре потолок датаграммы 1150 B < 1200 B у QUIC — нужна правка ядра |
 | Герметичный режим `--hermetic` (Linux): движок в пустом сетевом пространстве имён, прямых соединений нет по построению | работает (самопроверка `nrb hermetic-selftest`, `scripts/hermetic-e2e.sh`, `gui-hermetic.sh`); один процесс, без sandbox; зависит от разрешённых пользовательских namespaces |
 | Блокировщик рекламы и трекеров (`nrb adblock update`, EasyList/EasyPrivacy, счётчик в тулбаре) | работает на сетевом уровне (юнит-тесты, `scripts/gui-adblock.sh`, проверка на cnn.com); нет косметических правил, скриптлетов, режима I |
 | Пользовательские скрипты/стили (`<профиль>/userscripts/*.user.js`, `*.user.css`, `@match`/`@exclude`/`@run-at`) | работает (`scripts/gui-userscripts.sh`); без `GM_*` API и без управления в GUI |
-| Загрузки файлов, поиск по странице, печать, менеджер паролей, MSE-видео, расширения | нет (ограничения Servo 0.7 или не сделано) |
+| Загрузки файлов (Ctrl+J; куки из браузера, безопасное имя, отмена) | работает **по эвристике** (расширение файла в адресе, только GET); `Content-Disposition`, POST, `blob:` — нужен движок (N3b форка) |
+| Поиск по странице (Ctrl+F; подсветка, счётчик, переходы) | работает скриптом в странице (меняет DOM на время поиска); без shadow DOM и чужих iframe |
+| Данные сайтов (Ctrl+Shift+Del: куки, localStorage, sessionStorage, удаление) | работает; сторонние куки и разрешения — в движке (N4b) |
+| Печать, менеджер паролей, MSE-видео (YouTube и т. п.), расширения WebExtensions | нет: в Servo 0.7 нет страничной вёрстки, MSE и нужных хуков — см. план форка `nrxp-servo` |
 
 План — [docs/ITERATIONS.md](docs/ITERATIONS.md) (рабочий файл), журнал — [docs/PROGRESS.md](docs/PROGRESS.md),
 архитектура — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), факты и результаты спайков — [docs/research/NOTES.md](docs/research/NOTES.md).
@@ -62,7 +65,7 @@ scripts/build-node-musl.sh && nrb deploy root@1.2.3.4 --binary target-release/x8
 ## Проверки
 
 ```bash
-cargo test --workspace                        # ~60 тестов (часть требует собранный netrunner-server рядом)
+scripts/lowload.sh cargo test --workspace     # ~110 тестов; ВСЕ тяжёлые команды (сборка Servo, тесты) — через lowload.sh: cgroup-потолки памяти/CPU, иначе машина может лечь
 scripts/gui-smoke.sh                          # GUI-сценарии в вложенном Xephyr (не трогают рабочий стол)
 scripts/gui-dialogs.sh
 scripts/gui-profile.sh
@@ -73,6 +76,10 @@ scripts/hermetic-e2e.sh                       # герметичный режи�
 scripts/gui-hermetic.sh                       # окно в герметичном режиме, потоки по сетевым пространствам имён
 scripts/gui-adblock.sh                        # блокировщик рекламы: локальный сервер, правило /ads/*$script
 scripts/gui-userscripts.sh                    # пользовательские скрипты и стили
+scripts/gui-downloads.sh                      # загрузка файла с кукой (HERMETIC=1 — через герметичный режим и свой узел)
+scripts/gui-find.sh                           # поиск по странице
+scripts/gui-sitedata.sh                       # окно «Данные сайтов»
+scripts/gui-clipboard.sh                      # буфер обмена страницы
 scripts/egress-e2e.sh                         # reverse-egress: клиент → узел → домашний выход (3 процесса, loopback)
 scripts/deploy-e2e.sh                         # деплой в тестовый контейнер с systemd (нужен docker)
 ```
