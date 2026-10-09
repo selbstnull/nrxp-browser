@@ -11,6 +11,8 @@ mod deploy;
 mod fetch;
 mod gui;
 #[cfg(feature = "servo")]
+mod gui_downloads;
+#[cfg(feature = "servo")]
 mod gui_nodes;
 mod hermetic;
 mod node;

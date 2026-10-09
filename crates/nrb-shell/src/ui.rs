@@ -42,6 +42,7 @@ pub enum Action {
     OpenBookmarks,
     OpenSettings,
     OpenNodes,
+    OpenDownloads,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -219,6 +220,10 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
                     }
                     if ui.button("Узлы              Ctrl+Shift+N").clicked() {
                         actions.push(Action::OpenNodes);
+                        ui.close();
+                    }
+                    if ui.button("Загрузки          Ctrl+J").clicked() {
+                        actions.push(Action::OpenDownloads);
                         ui.close();
                     }
                     ui.separator();

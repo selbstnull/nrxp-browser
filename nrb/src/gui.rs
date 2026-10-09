@@ -94,6 +94,19 @@ pub fn run(
         },
         None => Vec::new(),
     };
+    // Загрузки файлов идут клиентом nrb-net по тому же транспорту, что и страницы (туннель, иначе прямо).
+    let downloads: Option<std::sync::Arc<dyn nrb_shell::DownloadHandler>> = match &tunnel {
+        Some(t) => Some(std::sync::Arc::new(
+            crate::gui_downloads::Handler::with_transport(t.transport(), t.runtime_handle(), None),
+        )),
+        None => match crate::gui_downloads::Handler::direct() {
+            Ok(handler) => Some(std::sync::Arc::new(handler)),
+            Err(error) => {
+                eprintln!("загрузки недоступны: {error}");
+                None
+            }
+        },
+    };
     let config = ShellConfig {
         initial_urls,
         servo: ServoConfig {
@@ -121,6 +134,7 @@ pub fn run(
         nodes: manager
             .clone()
             .map(|m| m as std::sync::Arc<dyn nrb_shell::NodeManager>),
+        downloads,
     };
     let code = match nrb_shell::run(config) {
         Ok(()) => 0,

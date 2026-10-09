@@ -25,6 +25,7 @@ use winit::keyboard::{Key as WKey, ModifiersState, NamedKey as WNamedKey};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{CursorIcon, Window, WindowId};
 
+use crate::downloads::{DownloadHandler, DownloadsWindow, looks_like_download};
 use crate::keys;
 use crate::library::{Library, LibraryAction, Panel};
 use crate::modal::{self, Modal};
@@ -47,6 +48,8 @@ pub struct ShellConfig {
     pub tunnel: Option<std::sync::Arc<dyn TunnelStatus>>,
     /// Менеджер узлов для окна «Узлы» (Ctrl+Shift+N); без него пункт меню не работает.
     pub nodes: Option<std::sync::Arc<dyn NodeManager>>,
+    /// Обработчик загрузок файлов (Ctrl+J); без него ссылки на файлы открываются как обычно.
+    pub downloads: Option<std::sync::Arc<dyn DownloadHandler>>,
     /// Блокировщик рекламы; без него (или без правил) запросы не фильтруются.
     pub adblock: Option<std::sync::Arc<nrb_adblock::Blocker>>,
     /// Готовый JavaScript пользовательских скриптов/стилей (`nrb_userscripts::UserContent::wrap`); внедряется во все вкладки.
@@ -61,6 +64,7 @@ impl Default for ShellConfig {
             search: omnibox::DEFAULT_SEARCH.into(),
             tunnel: None,
             nodes: None,
+            downloads: None,
             adblock: None,
             userscripts: Vec::new(),
         }
@@ -118,6 +122,9 @@ struct Shared {
     blocker: Option<std::sync::Arc<nrb_adblock::Blocker>>,
     adblock_on: Cell<bool>,
     blocked: Cell<u64>,
+    /// Включён ли перехват загрузок (есть обработчик) и очередь перехваченных: (адрес, страница-источник).
+    downloads_enabled: Cell<bool>,
+    download_requests: RefCell<Vec<(Url, Option<Url>)>>,
 }
 
 /// Адрес источника для подписи окон: `https://host`; для страниц без хоста — полный URL.
@@ -164,6 +171,27 @@ impl WebViewDelegate for Delegate {
 
     /// Блокировка рекламы и трекеров до сети. Главный документ не трогаем; страница верхнего уровня — источник для `$third-party`.
     fn load_web_resource(&self, webview: WebView, load: WebResourceLoad) {
+        // Загрузки файлов (N3a): главный GET-запрос на «файловый» адрес не показываем, а отдаём загрузчику. Ответ 204 оставляет
+        // текущую страницу на месте (как у настоящих браузеров). Настоящее решение — в движке (nxrp-servo N3b).
+        if self.0.downloads_enabled.get() {
+            let request = load.request();
+            if request.is_for_main_frame
+                && request.method == http::Method::GET
+                && looks_like_download(&request.url)
+            {
+                let url = request.url.clone();
+                self.0
+                    .download_requests
+                    .borrow_mut()
+                    .push((url.clone(), webview.url()));
+                load.intercept(
+                    WebResourceResponse::new(url).status_code(http::StatusCode::NO_CONTENT),
+                )
+                .finish();
+                self.0.redraw();
+                return;
+            }
+        }
         let Some(blocker) = self.0.blocker.as_ref() else {
             return;
         };
@@ -349,6 +377,8 @@ struct Running {
     tunnel: Option<std::sync::Arc<dyn TunnelStatus>>,
     nodes: Option<std::sync::Arc<dyn NodeManager>>,
     nodes_window: NodesWindow,
+    downloads: Option<std::sync::Arc<dyn DownloadHandler>>,
+    downloads_window: DownloadsWindow,
     next_badge_refresh: std::time::Instant,
     /// Очередь модальных запросов Servo; рисуется первое, остальные ждут.
     modals: std::collections::VecDeque<(Option<EmbedderControlId>, Modal)>,
@@ -503,6 +533,8 @@ impl Running {
             blocker: config.adblock.filter(|b| b.rule_count() > 0),
             adblock_on: Cell::new(false),
             blocked: Cell::new(0),
+            downloads_enabled: Cell::new(config.downloads.is_some()),
+            download_requests: RefCell::default(),
             completed: RefCell::default(),
             titled: RefCell::default(),
         });
@@ -575,6 +607,8 @@ impl Running {
             library: Library::default(),
             nodes: config.nodes,
             nodes_window: NodesWindow::default(),
+            downloads: config.downloads,
+            downloads_window: DownloadsWindow::default(),
             saved_session: (
                 nrb_profile::SessionState::default(),
                 std::time::Instant::now(),
@@ -705,8 +739,39 @@ impl Running {
         }
     }
 
+    /// Перехваченные загрузки: берём куки страницы из хранилища Servo и отдаём обработчику (клиент `nrb-net`, тот же транспорт).
+    fn start_pending_downloads(&mut self) {
+        let pending: Vec<(Url, Option<Url>)> = self
+            .shared
+            .download_requests
+            .borrow_mut()
+            .drain(..)
+            .collect();
+        let Some(handler) = self.downloads.clone() else {
+            return;
+        };
+        for (url, referer) in pending {
+            let cookies = self
+                .servo
+                .site_data_manager()
+                .cookies_for_url(url.clone(), nrb_engine_servo::servo::CookieSource::HTTP)
+                .iter()
+                .map(|c| format!("{}={}", c.name(), c.value()))
+                .collect::<Vec<_>>()
+                .join("; ");
+            handler.start(
+                &url,
+                (!cookies.is_empty()).then_some(cookies),
+                referer.map(|r| r.to_string()),
+            );
+            self.downloads_window.open = true;
+        }
+        self.window.request_redraw();
+    }
+
     fn spin(&mut self) {
         self.servo.spin_event_loop();
+        self.start_pending_downloads();
         let new_tabs: Vec<WebView> = self.shared.new_tabs.borrow_mut().drain(..).collect();
         for webview in new_tabs {
             self.adopt_tab(webview);
@@ -930,6 +995,7 @@ impl Running {
             Action::OpenBookmarks => self.library.toggle(Panel::Bookmarks),
             Action::OpenSettings => self.library.toggle(Panel::Settings),
             Action::OpenNodes => self.nodes_window.toggle(),
+            Action::OpenDownloads => self.downloads_window.toggle(),
             Action::ZoomIn => self.zoom(|z| z * 1.1),
             Action::ZoomOut => self.zoom(|z| z / 1.1),
             Action::ZoomReset => {
@@ -977,6 +1043,7 @@ impl Running {
             _ if ctrl && shift && character == "o" => self.apply(Action::OpenBookmarks),
             _ if ctrl && character == "," => self.apply(Action::OpenSettings),
             _ if ctrl && shift && character == "n" => self.apply(Action::OpenNodes),
+            _ if ctrl && !shift && character == "j" => self.apply(Action::OpenDownloads),
             _ if ctrl && (character == "=" || character == "+") => self.apply(Action::ZoomIn),
             _ if ctrl && (character == "-" || character == "_") => self.apply(Action::ZoomOut),
             _ if ctrl && character == "0" => self.apply(Action::ZoomReset),
@@ -1250,6 +1317,9 @@ impl Running {
                 content_top = ui.available_rect_before_wrap().top();
             }
             library_actions = self.library.show(ui.ctx(), &self.store, &mut self.settings);
+            if let Some(handler) = self.downloads.clone() {
+                self.downloads_window.show(ui.ctx(), handler.as_ref());
+            }
             if let Some(manager) = self.nodes.clone() {
                 let summary = self.tunnel.as_ref().map(|t| t.summary());
                 nodes_restart = self.nodes_window.show(ui.ctx(), manager.as_ref(), summary);
