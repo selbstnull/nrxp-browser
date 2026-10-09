@@ -7,6 +7,11 @@ set -u
 stop="${1:?нужен путь файла-флага остановки}"
 rm -f "$stop"
 while [ ! -e "$stop" ]; do
-  ss -Htunp 2>/dev/null | grep '"nrb"' | awk '{print $1, $5, $6}' | grep -vE '127\.0\.0\.1|\[::1\]'
+  # Процессы `nrb`, кроме узла (`nrb node run`): узел — выход в интернет по определению, его соединения не утечка.
+  ss -Htunp 2>/dev/null | grep '"nrb"' | while read -r line; do
+    pid=$(echo "$line" | sed -n 's/.*pid=\([0-9]*\),.*/\1/p')
+    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q ' node run' && continue
+    echo "$line" | awk '{print $1, $5, $6}'
+  done | grep -vE '127\.0\.0\.1|\[::1\]'
   sleep 0.1
 done | sort -u

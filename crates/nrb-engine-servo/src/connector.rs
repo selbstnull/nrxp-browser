@@ -53,7 +53,8 @@ impl NetworkConnector for TransportConnector {
                 "цель во внутренней сети запрещена политикой (--allow-private)",
             ))));
         }
-        let (transport, stats, host) = (self.transport.clone(), self.stats.clone(), host.to_owned());
+        let (transport, stats, host) =
+            (self.transport.clone(), self.stats.clone(), host.to_owned());
         let handle = self.runtime.clone();
         Box::pin(async move {
             let failed_stats = stats.clone();
@@ -62,7 +63,9 @@ impl NetworkConnector for TransportConnector {
                 .await
                 .map_err(|e| io::Error::other(format!("задача туннеля прервана: {e}")))?;
             match opened {
-                Ok(stream) => Ok(Box::new(CountedStream::new(stream, stats)) as Box<dyn NetworkStream>),
+                Ok(stream) => {
+                    Ok(Box::new(CountedStream::new(stream, stats)) as Box<dyn NetworkStream>)
+                }
                 Err(error) => {
                     failed_stats
                         .failed

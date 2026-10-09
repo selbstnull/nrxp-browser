@@ -62,7 +62,7 @@ fn run_inner(args: Args) -> i32 {
     }
     let tunnel = if args.node.enabled() {
         match crate::tunnel::start(&args.node).and_then(|mut tunnel| {
-            tunnel.isolate()?; // герметичный режим: дальше потоки движка в пустом сетевом пространстве имён
+            tunnel.isolate(args.node.hermetic)?; // герметичный режим: дальше потоки движка в пустом сетевом пространстве имён
             Ok(tunnel)
         }) {
             Ok(tunnel) => Some(tunnel),
@@ -74,9 +74,15 @@ fn run_inner(args: Args) -> i32 {
     } else {
         None
     };
-    let proxy = tunnel.as_ref().map(|t| t.proxy_url()).or(args.proxy);
+    let network_connector = tunnel.as_ref().map(|t| t.engine_connector());
+    let proxy = if network_connector.is_some() {
+        None
+    } else {
+        args.proxy
+    };
     let engine = match ServoSnapshotter::new(&ServoConfig {
         proxy,
+        network_connector,
         user_agent: std::env::var("NRB_USER_AGENT")
             .ok()
             .filter(|s| !s.is_empty()),

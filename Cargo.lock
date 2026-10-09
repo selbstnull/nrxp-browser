@@ -4750,8 +4750,11 @@ dependencies = [
  "anyhow",
  "dpi",
  "nrb-engine",
+ "nrb-net",
+ "nrb-transport",
  "rustls",
  "servo",
+ "tokio",
  "tracing",
  "url",
 ]

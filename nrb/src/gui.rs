@@ -55,7 +55,7 @@ pub fn run(
     let tunnel = if node.enabled() {
         match crate::tunnel::start(&node).and_then(|mut tunnel| {
             // Менеджер узлов уже создан (его рантайм остался в сети хоста); дальше потоки наследуют пустое пространство имён.
-            tunnel.isolate()?;
+            tunnel.isolate(node.hermetic)?;
             Ok(tunnel)
         }) {
             Ok(tunnel) => Some(std::sync::Arc::new(tunnel)),
@@ -67,7 +67,13 @@ pub fn run(
     } else {
         None
     };
-    let proxy = tunnel.as_ref().map(|t| t.proxy_url()).or(proxy);
+    // Узел задан — движок ходит через коннектор (Servo сокетов не открывает), прокси ему не нужен; иначе — внешний `--proxy`.
+    let network_connector = tunnel.as_ref().map(|t| t.engine_connector());
+    let proxy = if network_connector.is_some() {
+        None
+    } else {
+        proxy
+    };
     let filters = profile.filters_dir();
     let userscripts = match profile.userscripts_dir() {
         Some(dir) => match nrb_userscripts::load_dir(&dir) {
@@ -92,6 +98,7 @@ pub fn run(
         initial_urls,
         servo: ServoConfig {
             proxy,
+            network_connector,
             user_agent: std::env::var("NRB_USER_AGENT")
                 .ok()
                 .filter(|s| !s.is_empty()),
