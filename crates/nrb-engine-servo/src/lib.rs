@@ -29,11 +29,34 @@ pub struct ServoConfig {
     pub devtools_port: Option<u16>,
     /// JavaScript, внедряемый во все страницы (пользовательские скрипты, отладочные хуки). Применяется при загрузке страницы.
     pub user_scripts: Vec<String>,
+    /// Все исходящие TCP-соединения движка идут через этот коннектор (N2 форка): Servo не открывает сокетов сам, настройки
+    /// прокси `proxy` при этом не действуют. Нужен форк `nrxp-servo`.
+    pub network_connector: Option<ConnectorHandle>,
+}
+
+/// Обёртка над `Arc<dyn NetworkConnector>`: нужна, чтобы `ServoConfig` оставался `Debug + Clone`.
+#[derive(Clone)]
+pub struct ConnectorHandle(pub std::sync::Arc<dyn servo::NetworkConnector>);
+
+impl std::fmt::Debug for ConnectorHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ConnectorHandle(..)")
+    }
+}
+
+/// Применяет к `ServoBuilder` сетевые настройки из конфигурации (коннектор встраивателя).
+pub fn apply_network(builder: servo::ServoBuilder, config: &ServoConfig) -> servo::ServoBuilder {
+    match &config.network_connector {
+        Some(handle) => builder.network_connector(handle.0.clone()),
+        None => builder,
+    }
 }
 
 pub use servo;
 
+mod connector;
 mod resources;
+pub use connector::TransportConnector;
 pub use resources::ERROR_PAGE_TITLES;
 
 /// Применяет список вида `a,b,-c`: имя включает настройку `dom_<имя>_enabled`, `-имя` выключает. Неизвестные имена — в stderr.
@@ -240,11 +263,14 @@ impl ServoSnapshotter {
     pub fn new(config: &ServoConfig) -> anyhow::Result<Self> {
         install_crypto_provider();
 
-        let servo = ServoBuilder::default()
-            .opts(build_opts(config))
-            .preferences(build_preferences(config))
-            .event_loop_waker(Box::new(PollWaker(Arc::new(AtomicBool::new(false)))))
-            .build();
+        let servo = apply_network(
+            ServoBuilder::default()
+                .opts(build_opts(config))
+                .preferences(build_preferences(config))
+                .event_loop_waker(Box::new(PollWaker(Arc::new(AtomicBool::new(false))))),
+            config,
+        )
+        .build();
         let state = Rc::new(PageState::default());
         servo.set_delegate(Rc::new(ConsoleDelegate(state.clone())));
         let user_content = (!config.user_scripts.is_empty()).then(|| {

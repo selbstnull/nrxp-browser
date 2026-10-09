@@ -469,11 +469,14 @@ impl Running {
         );
         let content_ctx = Rc::new(window_ctx.offscreen_context(content_size));
 
-        let servo = ServoBuilder::default()
-            .opts(build_opts(&config.servo))
-            .preferences(build_preferences(&config.servo))
-            .event_loop_waker(Box::new(Waker(proxy)))
-            .build();
+        let servo = nrb_engine_servo::apply_network(
+            ServoBuilder::default()
+                .opts(build_opts(&config.servo))
+                .preferences(build_preferences(&config.servo))
+                .event_loop_waker(Box::new(Waker(proxy))),
+            &config.servo,
+        )
+        .build();
         if config.servo.devtools_port.is_some() {
             servo.set_delegate(Rc::new(EngineDelegate));
         }

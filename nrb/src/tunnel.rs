@@ -33,32 +33,16 @@ impl NodeArgs {
 
 #[cfg_attr(not(feature = "servo"), allow(dead_code))]
 pub struct Tunnel {
-    // Порядок важен: релей и прокси и транспорт должны умереть раньше рантайма.
-    isolation: Option<crate::hermetic::Isolated>,
+    // Порядок важен: прокси и транспорт должны умереть раньше рантайма.
     proxy: LocalProxy,
     transport: Arc<NrxpTransport>,
     label: String,
-    hermetic_dir: Option<std::path::PathBuf>,
-    _runtime: Runtime,
+    allow_private: bool,
+    isolated: bool,
+    runtime: Runtime,
 }
 
 pub fn start(args: &NodeArgs) -> Result<Tunnel, String> {
-    if args.hermetic {
-        let dir = crate::hermetic::socket_dir().map_err(|e| format!("каталог сокета: {e}"))?;
-        let mut tunnel = start_with(args, Some(&dir.join("proxy.sock")))?;
-        tunnel.hermetic_dir = Some(dir);
-        return Ok(tunnel);
-    }
-    start_with(args, None)
-}
-
-/// Герметичный вариант (I11): прокси слушает unix-сокет, TCP-порта на хосте нет.
-#[cfg_attr(not(unix), allow(dead_code))]
-pub fn start_unix(args: &NodeArgs, socket: &std::path::Path) -> Result<Tunnel, String> {
-    start_with(args, Some(socket))
-}
-
-fn start_with(args: &NodeArgs, unix_socket: Option<&std::path::Path>) -> Result<Tunnel, String> {
     let config = match (&args.node, &args.node_addr) {
         // `--node 'nrxp://…'` — приглашение прямо в аргументе (без предварительного `nrb pair`). В сообщениях об ошибках
         // саму ссылку не печатаем: в ней секреты узла и токен устройства.
@@ -86,70 +70,67 @@ fn start_with(args: &NodeArgs, unix_socket: Option<&std::path::Path>) -> Result<
                 .await
                 .map_err(|e| format!("подключение к узлу {}: {e}", config.addr))?,
         );
-        let policy = ProxyPolicy {
-            allow_private: args.allow_private,
-        };
-        let proxy = match unix_socket {
-            #[cfg(unix)]
-            Some(path) => LocalProxy::start_unix(path, transport.clone(), policy).await,
-            #[cfg(not(unix))]
-            Some(_) => Err(std::io::Error::other(
-                "unix-сокеты недоступны на этой платформе",
-            )),
-            None => LocalProxy::start(transport.clone(), policy).await,
-        }
+        // Локальный CONNECT-прокси остаётся для дочерних процессов (`nrb corpus` раздаёт его снимкам через NRB_PROXY_URL);
+        // движок в этом процессе ходит напрямую через коннектор (см. `engine_connector`).
+        let proxy = LocalProxy::start(
+            transport.clone(),
+            ProxyPolicy {
+                allow_private: args.allow_private,
+            },
+        )
+        .await
         .map_err(|e| format!("локальный прокси: {e}"))?;
         Ok::<_, String>((transport, proxy))
     })?;
     Ok(Tunnel {
-        isolation: None,
-        hermetic_dir: None,
         proxy,
         transport,
         label,
-        _runtime: runtime,
+        allow_private: args.allow_private,
+        isolated: false,
+        runtime,
     })
 }
 
-impl Drop for Tunnel {
-    fn drop(&mut self) {
-        if let Some(dir) = &self.hermetic_dir {
-            let _ = std::fs::remove_dir_all(dir);
-        }
-    }
-}
-
 impl Tunnel {
-    /// Логин и пароль прокси (для герметичного режима URL собирается с портом релея).
-    #[cfg_attr(not(unix), allow(dead_code))]
-    pub fn credentials(&self) -> (&str, &str) {
-        self.proxy.credentials()
-    }
-
-    /// `http://логин:пароль@127.0.0.1:порт` — для prefs движка и переменной `NRB_PROXY_URL` дочерних процессов.
+    /// `http://логин:пароль@127.0.0.1:порт` — для дочерних процессов (`NRB_PROXY_URL`).
     pub fn proxy_url(&self) -> String {
-        match &self.isolation {
-            Some(isolation) => isolation.url.clone(),
-            None => self.proxy.url(),
-        }
+        self.proxy.url()
     }
 
-    /// Герметичный режим: входит **этим потоком** в пустое сетевое пространство имён и поднимает релей. Звать после создания
-    /// всех рантаймов с сетью (туннель, менеджер узлов) и перед созданием движка. Без `--hermetic` ничего не делает.
+    /// Коннектор для движка: все TCP-соединения Servo идут в NRXP-поток, сокетов у движка нет.
+    #[cfg(feature = "servo")]
+    pub fn engine_connector(&self) -> nrb_engine_servo::ConnectorHandle {
+        nrb_engine_servo::ConnectorHandle(Arc::new(nrb_engine_servo::TransportConnector::new(
+            self.transport.clone(),
+            self.runtime.handle().clone(),
+            self.allow_private,
+            self.proxy.stats().clone(),
+        )))
+    }
+
+    /// Герметичный режим: входит **этим потоком** в пустое сетевое пространство имён. Звать после создания всех рантаймов с
+    /// сетью (туннель, менеджер узлов) и перед созданием движка. Релея и прокси не нужно: движок ходит через коннектор, а
+    /// поток NRXP живёт в рантайме туннеля (сеть хоста). Без `--hermetic` ничего не делает.
     #[cfg_attr(not(feature = "servo"), allow(dead_code))]
-    pub fn isolate(&mut self) -> Result<(), String> {
-        let Some(dir) = self.hermetic_dir.take() else {
+    pub fn isolate(&mut self, hermetic: bool) -> Result<(), String> {
+        if !hermetic {
             return Ok(());
-        };
-        let socket = dir.join("proxy.sock");
-        let creds = self.proxy.credentials();
-        let (relay, url) = crate::hermetic::isolate(&socket, creds)?;
-        self.isolation = Some(crate::hermetic::Isolated {
-            url,
-            _relay: relay,
-            dir,
-        });
+        }
+        crate::hermetic::enter_empty_namespace()?;
+        self.isolated = true;
         Ok(())
+    }
+
+    /// Рантайм туннеля (для проверок, которым нужно открыть поток так же, как это делает движок).
+    #[cfg_attr(not(feature = "servo"), allow(dead_code))]
+    pub fn transport(&self) -> Arc<NrxpTransport> {
+        self.transport.clone()
+    }
+
+    #[cfg_attr(not(feature = "servo"), allow(dead_code))]
+    pub fn runtime_handle(&self) -> tokio::runtime::Handle {
+        self.runtime.handle().clone()
     }
 }
 
@@ -170,7 +151,7 @@ impl nrb_shell::TunnelStatus for Tunnel {
         };
         format!(
             "{}NRXP {} · ног {legs} · соед. {} · вх {} исх {}",
-            if self.isolation.is_some() {
+            if self.isolated {
                 "герметично · "
             } else {
                 ""

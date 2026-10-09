@@ -199,7 +199,7 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 }
 
 /// Цель считаем приватной, если это `localhost`, .local/.internal или IP-литерал из закрытых диапазонов.
-fn is_private_target(host: &str) -> bool {
+pub fn is_private_target(host: &str) -> bool {
     let host = host
         .trim_start_matches('[')
         .trim_end_matches(']')
@@ -264,6 +264,72 @@ impl<S: AsyncWrite + Unpin> tokio::io::AsyncWrite for Counted<'_, S> {
             self.stats
                 .bytes_down
                 .fetch_add(*n as u64, Ordering::Relaxed);
+        }
+        poll
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// Поток, отданный движку напрямую (без CONNECT-прокси): считает трафик в общие [`ProxyStats`]. Для движка чтение — это
+/// загрузка (`bytes_down`), запись — отправка (`bytes_up`); счётчик активных соединений уменьшается при закрытии.
+pub struct CountedStream<S> {
+    inner: S,
+    stats: Arc<ProxyStats>,
+}
+
+impl<S> CountedStream<S> {
+    pub fn new(inner: S, stats: Arc<ProxyStats>) -> Self {
+        stats.active.fetch_add(1, Ordering::Relaxed);
+        stats.total.fetch_add(1, Ordering::Relaxed);
+        Self { inner, stats }
+    }
+}
+
+impl<S> Drop for CountedStream<S> {
+    fn drop(&mut self) {
+        self.stats.active.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for CountedStream<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &poll {
+            self.stats
+                .bytes_down
+                .fetch_add((buf.filled().len() - before) as u64, Ordering::Relaxed);
+        }
+        poll
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for CountedStream<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        data: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_write(cx, data);
+        if let std::task::Poll::Ready(Ok(n)) = &poll {
+            self.stats.bytes_up.fetch_add(*n as u64, Ordering::Relaxed);
         }
         poll
     }
