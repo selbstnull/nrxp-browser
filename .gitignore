@@ -1,14 +1,32 @@
-/target
+# Сборка: любые каталоги target* (target, target-release, target-fork, target-fork-rel, …)
+/target*/
+
+# Сгенерированное setup-upstream.sh: рабочие деревья ядра и Servo, [patch.crates-io] для форка
+.nrb-dev/
+/.cargo/config.toml
+
+# Результаты прогонов и упаковки
+/out/
+/dist/
 *.png
 !docs/**/*.png
-/out
-.nrb-dev/
-*.swp
-/target-release
-/bottles
+
+# Данные времени выполнения (Servo без профиля раньше сыпал bottles/ в каталог запуска)
+/bottles/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
-/dist
-/.cargo/config.toml
-/target-fork
+
+# Мусор редакторов, патчей, профилировщиков и дампов
+*.swp
+*~
+.idea/
+.vscode/
+.DS_Store
+*.orig
+*.rej
+*.profraw
+perf.data*
+/core
+core.[0-9]*
+*.log
