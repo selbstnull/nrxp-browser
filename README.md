@@ -44,7 +44,7 @@ cargo build -p nrb                   # без движка: узел, fetch, cor
 ```
 
 Важно: `Cargo.lock` взят из архива `servo-0.7.0` — не делать `cargo update` вслепую (иначе падает сборка на пре-релизных крейтах).
-Без `scripts/setup-upstream.sh` проект не соберётся (пути на `.nrb-dev/` и сгенерированный `.cargo/config.toml`). Servo берётся из форка `../nrxp-servo` (ветка `nrxp/0.7`, см. [docs/NRXP-SERVO.md](docs/NRXP-SERVO.md)), а если форка нет — из crates.io с легаси-патчем `servo-net`. Патчи лежат в `patches/` (к `netrunner-proxy` и к Servo).
+Без `scripts/setup-upstream.sh` проект не соберётся (пути на `.nrb-dev/` и сгенерированный `.cargo/config.toml`). Servo берётся из форка `../nrxp-servo` (ветка `nrxp/0.7`, см. [docs/NRXP-SERVO.md](docs/NRXP-SERVO.md)), форк обязателен (в нём `NetworkConnector`, которого нет в crates.io). Патчи лежат в `patches/` (к `netrunner-proxy` и к Servo).
 
 ## Использование
 
