@@ -15,7 +15,7 @@ check "стартовая страница" "Example Domain"
 shot 01-start
 
 xdotool key ctrl+l; sleep 0.3; xdotool type --delay 40 "news.ycombinator.com"; xdotool key Return; sleep 6
-check "омнибокс: ввод домена" "Hacker News"
+check_wait "омнибокс: ввод домена" "Hacker News"
 shot 02-hn
 
 # Клик по ссылке и «назад» — на локальных фикстурах (детерминированно, без сети).

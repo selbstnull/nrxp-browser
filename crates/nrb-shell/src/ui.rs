@@ -43,6 +43,7 @@ pub enum Action {
     OpenSettings,
     OpenNodes,
     OpenDownloads,
+    Find,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -220,6 +221,10 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
                     }
                     if ui.button("Узлы              Ctrl+Shift+N").clicked() {
                         actions.push(Action::OpenNodes);
+                        ui.close();
+                    }
+                    if ui.button("Найти на странице Ctrl+F").clicked() {
+                        actions.push(Action::Find);
                         ui.close();
                     }
                     if ui.button("Загрузки          Ctrl+J").clicked() {

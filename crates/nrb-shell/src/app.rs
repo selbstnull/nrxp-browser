@@ -26,6 +26,7 @@ use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::downloads::{DownloadHandler, DownloadsWindow, looks_like_download};
+use crate::find::{self, FindAction, FindBar};
 use crate::keys;
 use crate::library::{Library, LibraryAction, Panel};
 use crate::modal::{self, Modal};
@@ -379,6 +380,7 @@ struct Running {
     nodes_window: NodesWindow,
     downloads: Option<std::sync::Arc<dyn DownloadHandler>>,
     downloads_window: DownloadsWindow,
+    find_bar: FindBar,
     next_badge_refresh: std::time::Instant,
     /// Очередь модальных запросов Servo; рисуется первое, остальные ждут.
     modals: std::collections::VecDeque<(Option<EmbedderControlId>, Modal)>,
@@ -609,6 +611,7 @@ impl Running {
             nodes_window: NodesWindow::default(),
             downloads: config.downloads,
             downloads_window: DownloadsWindow::default(),
+            find_bar: FindBar::default(),
             saved_session: (
                 nrb_profile::SessionState::default(),
                 std::time::Instant::now(),
@@ -803,6 +806,12 @@ impl Running {
     /// Журнал: посещения дозагрузившихся страниц и обновление заголовков.
     fn record_history(&mut self) {
         let completed: Vec<WebViewId> = self.shared.completed.borrow_mut().drain(..).collect();
+        // Страница (пере)загрузилась — метки поиска исчезли вместе с прежним DOM.
+        if let Some(active) = self.active_tab()
+            && completed.contains(&active.id())
+        {
+            self.find_bar.reset_for_new_page();
+        }
         let titled: Vec<WebViewId> = self.shared.titled.borrow_mut().drain(..).collect();
         if !self.settings.record_history || self.profile_dir.is_none() {
             return;
@@ -996,6 +1005,7 @@ impl Running {
             Action::OpenSettings => self.library.toggle(Panel::Settings),
             Action::OpenNodes => self.nodes_window.toggle(),
             Action::OpenDownloads => self.downloads_window.toggle(),
+            Action::Find => self.find_bar.open(),
             Action::ZoomIn => self.zoom(|z| z * 1.1),
             Action::ZoomOut => self.zoom(|z| z / 1.1),
             Action::ZoomReset => {
@@ -1044,6 +1054,7 @@ impl Running {
             _ if ctrl && character == "," => self.apply(Action::OpenSettings),
             _ if ctrl && shift && character == "n" => self.apply(Action::OpenNodes),
             _ if ctrl && !shift && character == "j" => self.apply(Action::OpenDownloads),
+            _ if ctrl && !shift && character == "f" => self.apply(Action::Find),
             _ if ctrl && (character == "=" || character == "+") => self.apply(Action::ZoomIn),
             _ if ctrl && (character == "-" || character == "_") => self.apply(Action::ZoomOut),
             _ if ctrl && character == "0" => self.apply(Action::ZoomReset),
@@ -1311,9 +1322,11 @@ impl Running {
         let mut modal_done = false;
         let mut library_actions = Vec::new();
         let mut nodes_restart = false;
+        let mut find_actions = Vec::new();
         let mut output = self.egui_ctx.clone().run_ui(raw_input, |ui| {
             if !fullscreen {
                 actions = ui::toolbar(ui, &tabs, toolbar);
+                find_actions = self.find_bar.show(ui);
                 content_top = ui.available_rect_before_wrap().top();
             }
             library_actions = self.library.show(ui.ctx(), &self.store, &mut self.settings);
@@ -1333,6 +1346,25 @@ impl Running {
                 LibraryAction::Open(url) => self.navigate(&url),
                 LibraryAction::SettingsChanged => self.apply_settings(),
             }
+        }
+        for action in find_actions {
+            let Some(tab) = self.active_tab() else {
+                continue;
+            };
+            let (script, wants_result) = match action {
+                FindAction::Search(query, case) => (find::search_script(&query, case), true),
+                FindAction::Step(direction) => (find::step_script(direction), true),
+                FindAction::Close => (find::clear_script(), false),
+            };
+            let shared = self.find_bar.shared.clone();
+            tab.evaluate_javascript(script, move |result| {
+                if wants_result
+                    && let Ok(nrb_engine_servo::servo::JSValue::String(json)) = result
+                    && let Some(parsed) = find::parse_result(&json)
+                {
+                    *shared.borrow_mut() = Some(parsed);
+                }
+            });
         }
         if nodes_restart && let Some(manager) = self.nodes.clone() {
             self.save_session(true);

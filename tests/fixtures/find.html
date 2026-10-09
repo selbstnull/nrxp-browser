@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>find: start</title>
+<style>.hidden{display:none}</style>
+<p>Alpha beta alpha gamma ALPHA.</p>
+<p>Вторая строка: альфа и Альфа.</p>
+<p class="hidden">alpha скрытый</p>
+<script>var alpha = "alpha в скрипте не считается";</script>
+<p id="tail">alpha в конце</p>
+<script>
+  // Страница сообщает итог в заголовок: число меток и номер активной (по классу), чтобы сценарий не зависел от пикселей.
+  function report() {
+    var marks = document.querySelectorAll('mark.nrb-find-mark');
+    var act = -1;
+    marks.forEach(function (m, i) { if (m.classList.contains('nrb-find-active')) act = i; });
+    document.title = 'find: marks=' + marks.length + ' active=' + act;
+  }
+  new MutationObserver(report).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+</script>

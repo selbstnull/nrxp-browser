@@ -5,6 +5,7 @@
 
 mod app;
 mod downloads;
+mod find;
 mod keys;
 mod library;
 mod modal;
