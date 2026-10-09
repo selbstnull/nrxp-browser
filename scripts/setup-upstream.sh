@@ -27,22 +27,33 @@ else
   echo "готово: $WT"
 fi
 
-# --- Servo: servo-net с патчами из patches/servo (WebSocket через прокси) → .nrb-dev/servo-net, подключается через [patch.crates-io].
-SERVO_NET_VERSION="0.7.0"
-SN=".nrb-dev/servo-net"
-if [ ! -d "$SN" ]; then
-  SRC_DIR="$(ls -d "$HOME"/.cargo/registry/src/*/servo-net-"$SERVO_NET_VERSION" 2>/dev/null | head -1 || true)"
-  if [ -z "$SRC_DIR" ]; then
-    echo "servo-net $SERVO_NET_VERSION нет в кэше cargo — скачиваю (cargo fetch)…"
-    ./scripts/fetch-deps.sh
-    SRC_DIR="$(ls -d "$HOME"/.cargo/registry/src/*/servo-net-"$SERVO_NET_VERSION" | head -1)"
-  fi
-  cp -r "$SRC_DIR" "$SN"
-  chmod -R u+w "$SN"
-  for patch in patches/servo/*.patch; do
-    patch -p1 -d "$SN" < "$patch"
-  done
-  echo "готово: $SN (патчи Servo применены)"
+# --- Servo: форк nrxp-servo (предпочтительно) или легаси — только servo-net с патчем WebSocket.
+# Результат — `.cargo/config.toml` с [patch.crates-io] (генерируется, в git не хранится). Подмена ВСЕХ крейтов servo* обязательна:
+# частичная подмена даёт два набора несовместимых типов (path- и registry-версии одного крейта).
+NRXP_SERVO_DIR="${NRXP_SERVO_DIR:-$PWD/../nrxp-servo}"
+mkdir -p .cargo
+if [ -f "$NRXP_SERVO_DIR/components/servo/Cargo.toml" ]; then
+  python3 scripts/gen-servo-patch.py "$NRXP_SERVO_DIR" Cargo.lock > .cargo/config.toml
+  echo "готово: Servo из форка $NRXP_SERVO_DIR (ветка $(git -C "$NRXP_SERVO_DIR" branch --show-current)); .cargo/config.toml"
 else
-  echo "servo-net уже есть: $SN"
+  SERVO_NET_VERSION="0.7.0"
+  SN=".nrb-dev/servo-net"
+  if [ ! -d "$SN" ]; then
+    SRC_DIR="$(ls -d "$HOME"/.cargo/registry/src/*/servo-net-"$SERVO_NET_VERSION" 2>/dev/null | head -1 || true)"
+    if [ -z "$SRC_DIR" ]; then
+      echo "servo-net $SERVO_NET_VERSION нет в кэше cargo — скачиваю (cargo fetch)…"
+      ./scripts/fetch-deps.sh
+      SRC_DIR="$(ls -d "$HOME"/.cargo/registry/src/*/servo-net-"$SERVO_NET_VERSION" | head -1)"
+    fi
+    cp -r "$SRC_DIR" "$SN"
+    chmod -R u+w "$SN"
+    for patch in patches/servo/*.patch; do
+      patch -p1 -d "$SN" < "$patch"
+    done
+    echo "готово: $SN (патчи Servo применены)"
+  else
+    echo "servo-net уже есть: $SN"
+  fi
+  printf '# Сгенерировано scripts/setup-upstream.sh (легаси: форка nrxp-servo нет) — не править руками.\n[patch.crates-io]\nservo-net = { path = "%s/%s" }\n' "$PWD" "$SN" > .cargo/config.toml
+  echo "форка нет ($NRXP_SERVO_DIR) — использую легаси-патч servo-net"
 fi
