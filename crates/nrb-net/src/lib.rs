@@ -1,6 +1,7 @@
 //! HTTP-клиент браузера поверх [`Transport`]: h1/h2 с TLS (корни webpki зашиты в бинарь — системное хранилище не нужно).
 //! Сейчас это диагностический `nrb fetch`; кэш, куки, HSTS и h3 добавляются здесь же (I10, I12).
 
+pub mod download;
 pub mod proxy;
 
 use std::sync::Arc;
@@ -53,6 +54,36 @@ pub struct Response {
     pub redirects: usize,
 }
 
+/// Дополнительные параметры запроса (загрузки файлов: куки и реферер страницы, с которой пошла загрузка).
+#[derive(Debug, Clone, Default)]
+pub struct RequestOptions {
+    /// Заголовки, которые добавляются к запросу. Отправляются **только на исходный хост**: после редиректа на другой хост
+    /// куки/авторизация/реферер не пересылаются (куки чужого хоста мы не знаем, а утекать им некуда).
+    pub headers: Vec<(String, String)>,
+    /// Если задан, заменяет `User-Agent` по умолчанию.
+    pub user_agent: Option<String>,
+}
+
+/// Заголовок ответа, доступный до чтения тела (имя файла загрузки, размер, тип).
+#[derive(Debug)]
+pub struct ResponseHead<'a> {
+    pub status: u16,
+    pub headers: &'a [(String, String)],
+    pub final_url: &'a Url,
+}
+
+impl ResponseHead<'_> {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// Вызывается один раз для итогового ответа (после редиректов), до тела. Ошибка прерывает загрузку.
+pub type HeadHook<'a> = &'a mut (dyn FnMut(&ResponseHead<'_>) -> std::io::Result<()> + Send);
+
 /// Куда потоково складывать тело: вызывается на каждый кусок, ошибка прерывает загрузку.
 pub type BodySink<'a> = &'a mut (dyn FnMut(&[u8]) -> std::io::Result<()> + Send);
 
@@ -100,9 +131,29 @@ impl Fetcher {
 
     /// GET с редиректами. Тело читается целиком в память (до 256 МБ).
     pub async fn get(&self, url: &Url) -> Result<Response, FetchError> {
-        tokio::time::timeout(self.timeout, self.get_inner(url, None))
-            .await
-            .map_err(|_| FetchError::Timeout(self.timeout))?
+        tokio::time::timeout(
+            self.timeout,
+            self.get_inner(url, None, &RequestOptions::default(), None),
+        )
+        .await
+        .map_err(|_| FetchError::Timeout(self.timeout))?
+    }
+
+    /// Потоковая загрузка с дополнительными заголовками и доступом к заголовку ответа до тела. Таймаут `with_timeout`
+    /// ограничивает всю загрузку целиком — для файлов задайте его большим.
+    pub async fn download(
+        &self,
+        url: &Url,
+        options: &RequestOptions,
+        on_head: HeadHook<'_>,
+        sink: BodySink<'_>,
+    ) -> Result<Response, FetchError> {
+        tokio::time::timeout(
+            self.timeout,
+            self.get_inner(url, Some(sink), options, Some(on_head)),
+        )
+        .await
+        .map_err(|_| FetchError::Timeout(self.timeout))?
     }
 
     /// GET с редиректами; тело (последнего ответа) уходит в `sink` кусками, память не растёт.
@@ -112,19 +163,27 @@ impl Fetcher {
         url: &Url,
         sink: BodySink<'_>,
     ) -> Result<Response, FetchError> {
-        tokio::time::timeout(self.timeout, self.get_inner(url, Some(sink)))
-            .await
-            .map_err(|_| FetchError::Timeout(self.timeout))?
+        tokio::time::timeout(
+            self.timeout,
+            self.get_inner(url, Some(sink), &RequestOptions::default(), None),
+        )
+        .await
+        .map_err(|_| FetchError::Timeout(self.timeout))?
     }
 
     async fn get_inner(
         &self,
         start: &Url,
         mut sink: Option<BodySink<'_>>,
+        options: &RequestOptions,
+        mut on_head: Option<HeadHook<'_>>,
     ) -> Result<Response, FetchError> {
         let mut url = start.clone();
         for redirects in 0..=MAX_REDIRECTS {
-            let head = self.get_once(&url).await?;
+            // Заголовки вызывающего — только исходному хосту (см. `RequestOptions::headers`).
+            let same_origin = url.host_str() == start.host_str()
+                && url.port_or_known_default() == start.port_or_known_default();
+            let head = self.get_once(&url, options, same_origin).await?;
             let location = matches!(head.status, 301 | 302 | 303 | 307 | 308)
                 .then(|| {
                     head.headers
@@ -140,6 +199,14 @@ impl Fetcher {
                 continue;
             }
             let (status, version, headers) = (head.status, head.version, head.headers);
+            if let Some(hook) = on_head.as_mut() {
+                hook(&ResponseHead {
+                    status,
+                    headers: &headers,
+                    final_url: &url,
+                })
+                .map_err(|e| FetchError::Http(format!("загрузка отклонена: {e}")))?;
+            }
             let mut body = head.body;
             let mut collected = Vec::new();
             let mut total = 0usize;
@@ -171,7 +238,12 @@ impl Fetcher {
         Err(FetchError::TooManyRedirects)
     }
 
-    async fn get_once(&self, url: &Url) -> Result<Head, FetchError> {
+    async fn get_once(
+        &self,
+        url: &Url,
+        options: &RequestOptions,
+        same_origin: bool,
+    ) -> Result<Head, FetchError> {
         let https = match url.scheme() {
             "https" => true,
             "http" => false,
@@ -204,12 +276,30 @@ impl Fetcher {
                     })
                     .unwrap_or_default(),
             )
-            .header("user-agent", HeaderValue::from_static(USER_AGENT))
+            .header(
+                "user-agent",
+                options
+                    .user_agent
+                    .as_deref()
+                    .and_then(|ua| HeaderValue::from_str(ua).ok())
+                    .unwrap_or_else(|| HeaderValue::from_static(USER_AGENT)),
+            )
             .header("accept", "*/*")
             // Без сжатия: это диагностический клиент, декодеры не тянем.
             .header("accept-encoding", "identity")
             .body(Empty::<Bytes>::new())
             .map_err(|e| FetchError::Http(e.to_string()))?;
+
+        if same_origin {
+            for (name, value) in &options.headers {
+                if let (Ok(name), Ok(value)) = (
+                    hyper::header::HeaderName::from_bytes(name.as_bytes()),
+                    HeaderValue::from_str(value),
+                ) {
+                    request.headers_mut().insert(name, value);
+                }
+            }
+        }
 
         if https {
             let name = ServerName::try_from(
