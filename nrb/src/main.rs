@@ -263,10 +263,10 @@ fn main() {
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
     #[cfg(unix)]
-    // SAFETY: `_exit` не возвращается и не обращается к памяти Rust; буферы выше сброшены.
-    unsafe {
-        libc::_exit(code)
+    if std::env::var_os("NRB_GRACEFUL_EXIT").is_none() {
+        // SAFETY: `_exit` не возвращается и не обращается к памяти Rust; буферы выше сброшены.
+        unsafe { libc::_exit(code) }
     }
-    #[cfg(not(unix))]
+    // `NRB_GRACEFUL_EXIT=1` (отладка падений Servo при выходе) и не-unix: обычное завершение процесса.
     std::process::exit(code);
 }

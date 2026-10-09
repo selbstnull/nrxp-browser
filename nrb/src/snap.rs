@@ -97,7 +97,11 @@ fn run_inner(args: Args) -> i32 {
     // Servo при штатной остановке (Drop) может упасть с abort на assert внутри WebGL (`webglbuffer.rs: is_deleted`; на
     // release это роняет процесс уже после готового снимка и теряет код выхода). Процесс всё равно завершается — не
     // разбираем движок.
-    let mut engine = std::mem::ManuallyDrop::new(engine);
+    // `NRB_GRACEFUL_EXIT=1` возвращает штатную остановку (для отладки самих падений Servo при выходе).
+    let mut engine = TeardownGuard {
+        inner: std::mem::ManuallyDrop::new(engine),
+        graceful: std::env::var_os("NRB_GRACEFUL_EXIT").is_some(),
+    };
     let request = SnapshotRequest {
         url: args.url,
         size: args.size,
@@ -154,5 +158,37 @@ fn run_inner(args: Args) -> i32 {
             eprintln!("{error}");
             3
         }
+    }
+}
+
+/// Держит движок так, чтобы он не разбирался при выходе (см. комментарий у создания), если не просили иного.
+#[cfg(feature = "servo")]
+struct TeardownGuard {
+    inner: std::mem::ManuallyDrop<nrb_engine_servo::ServoSnapshotter>,
+    graceful: bool,
+}
+
+#[cfg(feature = "servo")]
+impl Drop for TeardownGuard {
+    fn drop(&mut self) {
+        if self.graceful {
+            // SAFETY: `inner` больше не используется после этого вызова.
+            unsafe { std::mem::ManuallyDrop::drop(&mut self.inner) }
+        }
+    }
+}
+
+#[cfg(feature = "servo")]
+impl std::ops::Deref for TeardownGuard {
+    type Target = nrb_engine_servo::ServoSnapshotter;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+#[cfg(feature = "servo")]
+impl std::ops::DerefMut for TeardownGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
     }
 }
