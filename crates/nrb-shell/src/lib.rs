@@ -10,6 +10,7 @@ mod keys;
 mod library;
 mod modal;
 mod nodes;
+mod site_data;
 mod ui;
 
 pub use app::{ShellConfig, TunnelStatus, run};

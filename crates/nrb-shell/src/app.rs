@@ -31,6 +31,7 @@ use crate::keys;
 use crate::library::{Library, LibraryAction, Panel};
 use crate::modal::{self, Modal};
 use crate::nodes::{NodeManager, NodesWindow};
+use crate::site_data::SiteDataWindow;
 use crate::ui::{self, Action, TabInfo, ToolbarState};
 
 /// Состояние туннеля для индикатора в тулбаре. Реализует вызывающий код (`nrb`), оболочка о NRXP ничего не знает.
@@ -381,6 +382,7 @@ struct Running {
     downloads: Option<std::sync::Arc<dyn DownloadHandler>>,
     downloads_window: DownloadsWindow,
     find_bar: FindBar,
+    site_data_window: SiteDataWindow,
     next_badge_refresh: std::time::Instant,
     /// Очередь модальных запросов Servo; рисуется первое, остальные ждут.
     modals: std::collections::VecDeque<(Option<EmbedderControlId>, Modal)>,
@@ -612,6 +614,7 @@ impl Running {
             downloads: config.downloads,
             downloads_window: DownloadsWindow::default(),
             find_bar: FindBar::default(),
+            site_data_window: SiteDataWindow::default(),
             saved_session: (
                 nrb_profile::SessionState::default(),
                 std::time::Instant::now(),
@@ -1006,6 +1009,7 @@ impl Running {
             Action::OpenNodes => self.nodes_window.toggle(),
             Action::OpenDownloads => self.downloads_window.toggle(),
             Action::Find => self.find_bar.open(),
+            Action::OpenSiteData => self.site_data_window.toggle(),
             Action::ZoomIn => self.zoom(|z| z * 1.1),
             Action::ZoomOut => self.zoom(|z| z / 1.1),
             Action::ZoomReset => {
@@ -1031,6 +1035,7 @@ impl Running {
             WKey::Named(WNamedKey::ArrowLeft) if alt => self.apply(Action::Back),
             WKey::Named(WNamedKey::ArrowRight) if alt => self.apply(Action::Forward),
             WKey::Named(WNamedKey::F5) => self.apply(Action::Reload),
+            WKey::Named(WNamedKey::Delete) if ctrl && shift => self.apply(Action::OpenSiteData),
             WKey::Named(WNamedKey::F11) => self.set_fullscreen(!self.fullscreen),
             WKey::Named(WNamedKey::Escape) if self.fullscreen && self.modals.is_empty() => {
                 if let Some(tab) = self.active_tab() {
@@ -1333,6 +1338,8 @@ impl Running {
             if let Some(handler) = self.downloads.clone() {
                 self.downloads_window.show(ui.ctx(), handler.as_ref());
             }
+            self.site_data_window
+                .show(ui.ctx(), self.servo.site_data_manager());
             if let Some(manager) = self.nodes.clone() {
                 let summary = self.tunnel.as_ref().map(|t| t.summary());
                 nodes_restart = self.nodes_window.show(ui.ctx(), manager.as_ref(), summary);
