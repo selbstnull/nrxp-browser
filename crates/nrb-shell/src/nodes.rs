@@ -16,6 +16,8 @@ pub struct DeviceRow {
     pub id: String,
     pub egress: bool,
     pub revoked: bool,
+    /// Выход клиента: `None` — по режиму узла, `Some("local")`, иначе метка домашнего выхода.
+    pub exit_via: Option<String>,
 }
 
 /// Состояние собственного узла.
@@ -49,6 +51,10 @@ pub trait NodeManager: Send + Sync {
     /// Ссылка-приглашение с секретами; токен показывается один раз.
     fn invite(&self, device: &str, egress: bool) -> Result<String, String>;
     fn revoke(&self, device: &str) -> Result<(), String>;
+    /// Режим выхода клиентов узла: `local` | `prefer` | `require` (узел подхватывает изменение сам).
+    fn set_exit_mode(&self, mode: &str) -> Result<(), String>;
+    /// Выход одного клиентского устройства: `None` — по режиму узла, `Some("local")`, иначе метка выхода.
+    fn set_device_exit(&self, device: &str, via: Option<&str>) -> Result<(), String>;
     /// Завершить окно и запустить `nrb` заново с теми же аргументами (после смены узла).
     fn request_restart(&self);
 }
@@ -266,20 +272,27 @@ impl NodesWindow {
                 ui.weak(format!("сессий: {}", own.sessions));
             }
         });
-        ui.label(format!(
-            "Выход клиентов: {}{}",
-            match own.exit.as_str() {
-                "prefer" => "через домашний выход, если подключён, иначе с узла",
-                "require" => "ТОЛЬКО через домашний выход",
-                _ => "с самого узла",
-            },
-            if own.live_egress.is_empty() {
-                String::new()
-            } else {
-                format!("   ·   подключён выход: {}", own.live_egress.join(", "))
+        ui.horizontal(|ui| {
+            ui.label("Выход клиентов:");
+            for (value, text) in [
+                ("local", "с самого узла"),
+                ("prefer", "через домашний выход, если подключён"),
+                ("require", "ТОЛЬКО через домашний выход"),
+            ] {
+                if ui.radio(own.exit == value, text).clicked() && own.exit != value {
+                    match manager.set_exit_mode(value) {
+                        Ok(()) => self.ok("Режим выхода сохранён (узел подхватит его сам)."),
+                        Err(error) => self.err(error),
+                    }
+                }
             }
-        ));
-        ui.weak("Режим выхода задаётся в node.toml (exit) и читается при запуске узла.");
+        });
+        ui.weak(if own.live_egress.is_empty() {
+            "Домашних выходов не подключено (nrb egress '<ссылка>' на домашнем устройстве)."
+                .to_owned()
+        } else {
+            format!("Подключён выход: {}", own.live_egress.join(", "))
+        });
 
         ui.add_space(4.0);
         ui.label("Новое приглашение:");
@@ -340,6 +353,55 @@ impl NodesWindow {
                     },
                     device.id
                 ));
+                if !device.egress && !device.revoked {
+                    let current = match device.exit_via.as_deref() {
+                        None => "по режиму узла".to_owned(),
+                        Some("local") => "с узла".to_owned(),
+                        Some(label) => format!("через «{label}»"),
+                    };
+                    egui::ComboBox::from_id_salt(("exit", &device.id))
+                        .selected_text(current)
+                        .show_ui(ui, |ui| {
+                            let mut choice: Option<Option<String>> = None;
+                            if ui
+                                .selectable_label(device.exit_via.is_none(), "по режиму узла")
+                                .clicked()
+                            {
+                                choice = Some(None);
+                            }
+                            if ui
+                                .selectable_label(
+                                    device.exit_via.as_deref() == Some("local"),
+                                    "всегда с узла",
+                                )
+                                .clicked()
+                            {
+                                choice = Some(Some("local".into()));
+                            }
+                            let mut labels = own.live_egress.clone();
+                            if let Some(via) = device.exit_via.as_deref()
+                                && via != "local"
+                                && !labels.iter().any(|l| l == via)
+                            {
+                                labels.push(via.to_owned());
+                            }
+                            for label in labels {
+                                let selected = device.exit_via.as_deref() == Some(label.as_str());
+                                if ui
+                                    .selectable_label(selected, format!("только через «{label}»"))
+                                    .clicked()
+                                {
+                                    choice = Some(Some(label));
+                                }
+                            }
+                            if let Some(choice) = choice {
+                                match manager.set_device_exit(&device.name, choice.as_deref()) {
+                                    Ok(()) => self.ok(format!("Выход «{}» сохранён.", device.name)),
+                                    Err(error) => self.err(error),
+                                }
+                            }
+                        });
+                }
                 if device.revoked {
                     ui.weak("отозвано");
                 } else if ui.small_button("Отозвать").clicked() {

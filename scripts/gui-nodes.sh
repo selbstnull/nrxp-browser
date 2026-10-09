@@ -20,6 +20,7 @@ click 424 241; sleep 1.5; shot 02-own-created
 click 170 241; sleep 1.5; shot 03-ingress-on
 click 120 320; xdotool type --delay 40 "phone"
 click 460 320; sleep 1; shot 04-invite
+shot 04b-exit-controls
 grep -q '"phone"' "$HA/netrunner-browser/node/devices.json" && echo "ok   приглашение из окна записано в реестр устройств" || { echo "FAIL приглашение не попало в devices.json"; fail=1; }
 grep -q 'токен\|token' "$HA/netrunner-browser/node/devices.json" && ! grep -qE '"token":' "$HA/netrunner-browser/node/devices.json" && echo "ok   в реестре только хеш токена" || true
 APID=$PID; AWID=$WID

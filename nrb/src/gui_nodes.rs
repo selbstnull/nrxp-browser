@@ -117,6 +117,7 @@ impl NodeManager for Manager {
                 id: d.id,
                 egress: d.role == Role::Egress,
                 revoked: d.revoked,
+                exit_via: d.exit_via,
             })
             .collect();
         let guard = self.ingress.lock().expect("mutex ingress");
@@ -175,6 +176,19 @@ impl NodeManager for Manager {
         DeviceStore::open(&self.node_dir)
             .and_then(|s| s.revoke(device))
             .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    fn set_exit_mode(&self, mode: &str) -> Result<(), String> {
+        let mut file = NodeFile::load(&self.node_dir).map_err(|e| e.to_string())?;
+        file.exit = mode.to_owned();
+        file.exit_mode().map_err(|e| e.to_string())?;
+        file.save(&self.node_dir).map_err(|e| e.to_string())
+    }
+
+    fn set_device_exit(&self, device: &str, via: Option<&str>) -> Result<(), String> {
+        DeviceStore::open(&self.node_dir)
+            .and_then(|s| s.set_exit_via(device, via.map(str::to_owned)))
             .map_err(|e| e.to_string())
     }
 

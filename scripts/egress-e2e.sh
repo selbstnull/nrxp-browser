@@ -71,6 +71,25 @@ sleep 2
 fetch "$CLIENT" && bad "после остановки egress запрос всё ещё проходит" || ok "после остановки egress запросы не выходят с узла"
 kill -0 "$NODE_PID" 2>/dev/null && ok "узел продолжает работать" || bad "узел упал"
 
+# 5a. Выход по устройству и живая смена режима (без перезапуска узла); выхода сейчас нет, режим require.
+"$NRB" node exit --dir "$DIR" телефон local > /dev/null
+sleep 1
+fetch "$CLIENT" 15s && ok "устройство с выходом «local» работает без домашнего выхода при require" || bad "exit local"
+"$NRB" node exit --dir "$DIR" телефон default > /dev/null
+sleep 1
+fetch "$CLIENT" && bad "после сброса выхода устройство всё ещё идёт с узла" || ok "после сброса выхода снова отказ (require)"
+"$NRB" node exit --dir "$DIR" телефон дом > /dev/null
+sleep 1
+fetch "$CLIENT" && bad "привязка к отсутствующей метке выпустила трафик" || ok "привязка к отсутствующей метке — отказ, без выхода с узла"
+"$NRB" node exit --dir "$DIR" телефон default > /dev/null
+"$NRB" node mode --dir "$DIR" local > /dev/null
+sleep 4
+fetch "$CLIENT" 15s && ok "режим local применён на лету (без перезапуска узла)" || bad "живая смена режима на local"
+"$NRB" node mode --dir "$DIR" require > /dev/null
+sleep 4
+fetch "$CLIENT" && bad "режим require не вернулся" || ok "режим require вернулся на лету"
+"$NRB" node mode --dir "$DIR" мусор > /dev/null 2>&1 && bad "принят неверный режим" || ok "неверный режим отвергнут командой"
+
 # 6. Отзыв выхода на лету.
 "$NRB" egress "$EGRESS" --allow-lan > "$DIR/egress.log" 2>&1 &
 EGRESS_PID=$!

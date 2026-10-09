@@ -243,11 +243,11 @@ pub fn file_name_from(
         .filter(|s| !s.is_empty())
         .map(percent_decode);
     let mut name = sanitize_file_name(&from_header.or(from_url).unwrap_or_default());
-    if !name.contains('.') {
-        if let Some(ext) = content_type.and_then(extension_for) {
-            name.push('.');
-            name.push_str(ext);
-        }
+    if !name.contains('.')
+        && let Some(ext) = content_type.and_then(extension_for)
+    {
+        name.push('.');
+        name.push_str(ext);
     }
     name
 }
@@ -298,7 +298,7 @@ fn percent_decode(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%'
-            && i + 2 < bytes.len() + 0
+            && i + 2 < bytes.len()
             && let (Some(h), Some(l)) = (
                 (bytes[i + 1] as char).to_digit(16),
                 (bytes[i + 2] as char).to_digit(16),
