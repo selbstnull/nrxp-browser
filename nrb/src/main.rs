@@ -17,6 +17,7 @@ mod gui_nodes;
 mod hermetic;
 mod node;
 mod profile;
+mod release;
 mod snap;
 mod tunnel;
 
@@ -170,6 +171,16 @@ enum Command {
         #[arg(long)]
         host_port: Option<u16>,
     },
+    /// Выпуск релизов (для выпускающего): ключи, манифест, подпись, проверка.
+    Release {
+        #[command(subcommand)]
+        command: release::ReleaseCommand,
+    },
+    /// Обновления с проверкой подписи: есть ли новая версия, скачать артефакт.
+    Update {
+        #[command(subcommand)]
+        command: release::UpdateCommand,
+    },
     /// Версия.
     Version,
 }
@@ -257,6 +268,8 @@ fn main() {
         }) => node::egress(&node, label, allow_lan, max_streams),
         Some(Command::Adblock { command }) => adblock::run(command),
         Some(Command::HermeticSelftest { node, host_port }) => hermetic::selftest(&node, host_port),
+        Some(Command::Release { command }) => release::run_release(command),
+        Some(Command::Update { command }) => release::run_update(command),
         Some(Command::Version) => {
             println!("nrb {}", env!("CARGO_PKG_VERSION"));
             0

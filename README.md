@@ -27,6 +27,7 @@
 | Герметичный режим `--hermetic` (Linux): движок в пустом сетевом пространстве имён, прямых соединений нет по построению | работает (самопроверка `nrb hermetic-selftest`, `scripts/hermetic-e2e.sh`, `gui-hermetic.sh`); один процесс, без sandbox; зависит от разрешённых пользовательских namespaces |
 | Блокировщик рекламы и трекеров (`nrb adblock update`, EasyList/EasyPrivacy, счётчик в тулбаре) | работает на сетевом уровне (юнит-тесты, `scripts/gui-adblock.sh`, проверка на cnn.com); нет косметических правил, скриптлетов, режима I |
 | Пользовательские скрипты/стили (`<профиль>/userscripts/*.user.js`, `*.user.css`, `@match`/`@exclude`/`@run-at`) | работает (`scripts/gui-userscripts.sh`); без `GM_*` API и без управления в GUI |
+| Подписанные обновления (`nrb release keygen/manifest/sign/verify`, `nrb update check/download`, проверка бинаря в `nrb deploy --manifest`) | работает (`scripts/update-e2e.sh`); автообновления самого браузера нет, ключ релизов не создан |
 | Загрузки файлов (Ctrl+J; куки из браузера, безопасное имя, отмена) | работает **по эвристике** (расширение файла в адресе, только GET); `Content-Disposition`, POST, `blob:` — нужен движок (N3b форка) |
 | Поиск по странице (Ctrl+F; подсветка, счётчик, переходы) | работает скриптом в странице (меняет DOM на время поиска); без shadow DOM и чужих iframe |
 | Данные сайтов (Ctrl+Shift+Del: куки, localStorage, sessionStorage, удаление) | работает; сторонние куки и разрешения — в движке (N4b) |

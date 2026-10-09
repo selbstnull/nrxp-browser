@@ -21,6 +21,7 @@ nrb-node = { path = "../crates/nrb-node" }
 nrb-adblock = { path = "../crates/nrb-adblock" }
 nrb-userscripts = { path = "../crates/nrb-userscripts" }
 nrb-hermetic = { path = "../crates/nrb-hermetic" }
+nrb-update = { path = "../crates/nrb-update" }
 libc = "0.2"
 nrb-transport = { path = "../crates/nrb-transport" }
 tokio.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "nrb-update"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Подписанный канал обновлений (ed25519): манифест релиза, подпись, проверка, защита от отката"
+
+[dependencies]
+ed25519-dalek = "3"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror.workspace = true
+getrandom = "0.3"

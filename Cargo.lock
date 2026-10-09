@@ -4698,6 +4698,7 @@ dependencies = [
  "nrb-node",
  "nrb-shell",
  "nrb-transport",
+ "nrb-update",
  "nrb-userscripts",
  "rpassword",
  "serde",
@@ -4856,6 +4857,18 @@ dependencies = [
  "tokio-util",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
+]
+
+[[package]]
+name = "nrb-update"
+version = "0.0.1"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

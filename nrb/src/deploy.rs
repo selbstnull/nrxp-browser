@@ -27,6 +27,15 @@ pub struct DeployArgs {
     /// Бинарь `nrb` для сервера (Linux x86_64/aarch64), либо `self` — текущий исполняемый файл. Для старых дистрибутивов нужна статическая musl-сборка.
     #[arg(long)]
     pub binary: Option<String>,
+    /// Подписанный манифест релиза: бинарь обязан входить в него (по SHA-256), иначе деплой отказывает до всяких изменений на сервере.
+    #[arg(long, requires = "binary")]
+    pub manifest: Option<PathBuf>,
+    /// Подпись манифеста (по умолчанию `<манифест>.sig`).
+    #[arg(long, requires = "manifest")]
+    pub signature: Option<PathBuf>,
+    /// Публичный ключ выпускающего (hex); без него — ключ, зашитый в сборку (`NRB_UPDATE_PUBKEY`).
+    #[arg(long, requires = "manifest")]
+    pub pubkey: Option<PathBuf>,
     /// Имя первого устройства, для которого выдаётся приглашение.
     #[arg(long, default_value = "первое-устройство")]
     pub device: String,
@@ -45,6 +54,42 @@ pub struct DeployArgs {
     /// Служебный флаг тестов отката: считать проверку после установки проваленной.
     #[arg(long, hide = true)]
     pub inject_verify_failure: bool,
+}
+
+/// Бинарь, который уйдёт на сервер, обязан быть в подписанном манифесте (иначе подмена файла на пути к серверу прошла бы молча).
+fn verify_against_manifest(
+    binary: &[u8],
+    manifest_path: &std::path::Path,
+    signature: Option<&std::path::Path>,
+    pubkey: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let bytes =
+        std::fs::read(manifest_path).map_err(|e| format!("{}: {e}", manifest_path.display()))?;
+    let signature_path = signature.map(PathBuf::from).unwrap_or_else(|| {
+        let mut name = manifest_path.as_os_str().to_owned();
+        name.push(".sig");
+        PathBuf::from(name)
+    });
+    let signature = std::fs::read_to_string(&signature_path)
+        .map_err(|e| format!("{}: {e}", signature_path.display()))?;
+    let key = match (pubkey, crate::release::default_pubkey()) {
+        (Some(path), _) => {
+            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?
+        }
+        (None, Some(key)) => key.to_owned(),
+        (None, None) => return Err("нужен публичный ключ: --pubkey <файл>".into()),
+    };
+    let manifest = nrb_update::verify_manifest(&bytes, signature.trim(), key.trim())
+        .map_err(|e| e.to_string())?;
+    let hash = nrb_update::sha256_hex(binary);
+    let artifact = manifest.artifact_by_hash(&hash).ok_or_else(|| {
+        format!("бинарь (sha256 {hash}) не входит в подписанный манифест — деплой отменён")
+    })?;
+    eprintln!(
+        "бинарь проверен по подписанному манифесту: версия {}, артефакт {}",
+        manifest.version, artifact.name
+    );
+    Ok(())
 }
 
 fn data_dir() -> Option<PathBuf> {
@@ -147,7 +192,18 @@ fn execute(args: DeployArgs) -> Result<(), String> {
         } else {
             PathBuf::from(spec)
         };
-        std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?
+        let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if let Some(manifest_path) = &args.manifest {
+            verify_against_manifest(
+                &data,
+                manifest_path,
+                args.signature.as_deref(),
+                args.pubkey.as_deref(),
+            )?;
+        } else {
+            eprintln!("  ⚠ бинарь не проверяется подписью релиза (задайте --manifest и --pubkey)");
+        }
+        data
     };
     let known_path = data_dir()
         .map(|d| d.join("known_hosts.toml"))
