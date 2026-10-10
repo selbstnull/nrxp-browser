@@ -33,7 +33,7 @@ jobs:
           repository: selbstnull/netrunner-core
           path: netrunner-proxy
       - uses: dtolnay/rust-toolchain@stable
-      - name: подготовка (.nrb-dev: worktree ядра и патч)
+      - name: "подготовка (.nrb-dev: worktree ядра и патч)"
         shell: bash
         working-directory: netrunner-browser
         run: scripts/setup-upstream.sh
@@ -83,16 +83,16 @@ jobs:
       - uses: actions/checkout@v4
         with: { repository: "${{ inputs.servo_repo }}", ref: nrxp/0.7, path: nrxp-servo }
       - uses: dtolnay/rust-toolchain@stable
-      - name: Linux: системные пакеты
+      - name: "Linux: системные пакеты"
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake libclang-dev llvm-dev libfontconfig1-dev libfreetype-dev libunwind-dev libudev-dev libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgles2-mesa-dev libssl-dev libdbus-1-dev libvulkan-dev
-      - name: Windows: инструменты сборки Servo (MSVC, LLVM, Python, NASM)
+      - name: "Windows: инструменты сборки Servo (MSVC, LLVM, Python, NASM)"
         if: runner.os == 'Windows'
         shell: pwsh
         run: choco install -y llvm nasm python3 cmake
-      - name: macOS: инструменты
+      - name: "macOS: инструменты"
         if: runner.os == 'macOS'
         run: brew install cmake python@3.12 pkg-config
       - name: подготовка
