@@ -1,19 +1,16 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>find: start</title>
-<style>.hidden{display:none}</style>
+<style>body{background:#fff;color:#000;font:24px sans-serif}.hidden{display:none}</style>
 <p>Alpha beta alpha gamma ALPHA.</p>
 <p>Вторая строка: альфа и Альфа.</p>
 <p class="hidden">alpha скрытый</p>
 <script>var alpha = "alpha в скрипте не считается";</script>
 <p id="tail">alpha в конце</p>
 <script>
-  // Страница сообщает итог в заголовок: число меток и номер активной (по классу), чтобы сценарий не зависел от пикселей.
-  function report() {
-    var marks = document.querySelectorAll('mark.nrb-find-mark');
-    var act = -1;
-    marks.forEach(function (m, i) { if (m.classList.contains('nrb-find-active')) act = i; });
-    document.title = 'find: marks=' + marks.length + ' active=' + act;
-  }
-  new MutationObserver(report).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+  // Страница считает, сколько раз с ней что-то случилось: записи MutationObserver по body и число диапазонов выделения.
+  // Поиск в движке (N5b) не должен менять ни то, ни другое: сценарий сравнивает с состоянием до поиска.
+  var muts = 0;
+  new MutationObserver(function (r) { muts += r.length; }).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+  setInterval(function () { document.title = 'find: muts=' + muts + ' sel=' + getSelection().rangeCount; }, 300);
 </script>

@@ -37,6 +37,7 @@ use crate::nodes::{NodeManager, NodesWindow};
 use crate::print::{PrintJob, Progress};
 use crate::site_data::SiteDataWindow;
 use crate::ui::{self, Action, TabAudioState, TabInfo, ToolbarState};
+use nrb_engine_servo::servo::{FindAction as EngineFindAction, FindRequest};
 
 /// Состояние туннеля для индикатора в тулбаре. Реализует вызывающий код (`nrb`), оболочка о NRXP ничего не знает.
 pub trait TunnelStatus: Send + Sync {
@@ -1634,13 +1635,34 @@ impl Running {
             let Some(tab) = self.active_tab() else {
                 continue;
             };
-            let (script, wants_result) = match action {
-                FindAction::Search(query, case) => (find::search_script(&query, case), true),
-                FindAction::Step(direction) => (find::step_script(direction), true),
-                FindAction::Close => (find::clear_script(), false),
+            let (query, case_sensitive) = {
+                let (query, case) = self.find_bar.query();
+                (query.to_owned(), case)
             };
+            let request = match action {
+                FindAction::Search(query, case_sensitive) => FindRequest {
+                    action: EngineFindAction::Search,
+                    query,
+                    case_sensitive,
+                },
+                FindAction::Step(direction) => FindRequest {
+                    action: if direction < 0 {
+                        EngineFindAction::Previous
+                    } else {
+                        EngineFindAction::Next
+                    },
+                    query,
+                    case_sensitive,
+                },
+                FindAction::Close => FindRequest {
+                    action: EngineFindAction::Clear,
+                    query,
+                    case_sensitive,
+                },
+            };
+            let wants_result = request.action != EngineFindAction::Clear;
             let shared = self.find_bar.shared.clone();
-            tab.evaluate_javascript(script, move |result| {
+            tab.find(request, move |result| {
                 if wants_result
                     && let Ok(nrb_engine_servo::servo::JSValue::String(json)) = result
                     && let Some(parsed) = find::parse_result(&json)
