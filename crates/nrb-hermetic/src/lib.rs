@@ -38,6 +38,9 @@ mod other {
     pub fn enter_empty_network_namespace() -> io::Result<()> {
         unsupported()
     }
+    pub fn is_empty_namespace() -> io::Result<bool> {
+        unsupported()
+    }
 }
 #[cfg(not(target_os = "linux"))]
 pub use other::*;

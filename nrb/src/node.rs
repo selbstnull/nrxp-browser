@@ -78,11 +78,7 @@ pub enum NodeCommand {
 }
 
 pub fn default_data_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
-    Some(base.join("netrunner-browser"))
+    crate::platform::data_dir()
 }
 
 fn default_node_dir() -> Option<PathBuf> {

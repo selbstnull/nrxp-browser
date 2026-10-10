@@ -1,0 +1,116 @@
+# Сборка и проверки под все ОС (кроссплатформа). ВНИМАНИЕ: файл написан в Linux-окружении и на раннерах GitHub НЕ запускался —
+# Windows, macOS и Android здесь собрать нельзя. Первые прогоны наверняка потребуют правок (пути, пакеты, версии).
+#
+# Две части:
+#   • `portable` — быстрые проверки без движка на Linux/Windows/macOS: компиляция, тесты крейтов, правила путей (`nrb::platform`);
+#   • `engine` — сборка `nrb` с движком Servo на Windows (MSVC), macOS и Linux; тяжёлая (десятки минут), только вручную.
+# Требует рядом три репозитория: netrunner-browser (этот), netrunner-proxy (ядро NRXP) и nrxp-servo (форк Servo, ветка nrxp/0.7).
+# Форк nrxp-servo пока НЕ опубликован ни в одном remote — `engine` без него не запустится (вход `servo_repo`).
+name: platforms
+on:
+  workflow_dispatch:
+    inputs:
+      servo_repo:
+        description: "URL форка nrxp-servo (ветка nrxp/0.7); пусто — только portable"
+        required: false
+        default: ""
+  pull_request:
+    paths: ["nrb/src/platform.rs", "crates/**", ".github/workflows/platforms.yml"]
+
+jobs:
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: netrunner-browser }
+      - uses: actions/checkout@v4
+        with:
+          repository: selbstnull/netrunner-core
+          path: netrunner-proxy
+      - uses: dtolnay/rust-toolchain@stable
+      - name: подготовка (.nrb-dev: worktree ядра и патч)
+        shell: bash
+        working-directory: netrunner-browser
+        run: scripts/setup-upstream.sh
+      - name: тесты крейтов без движка
+        working-directory: netrunner-browser
+        run: cargo test -p nrb -p nrb-node -p nrb-transport -p nrb-net -p nrb-profile -p nrb-deploy -p nrb-adblock -p nrb-userscripts -p nrb-hermetic -p nrb-update -p nrb-pdf
+
+  android-check:
+    # Только компиляция без движка (движок под Android — отдельная работа: см. docs/PLATFORMS.md).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: netrunner-browser }
+      - uses: actions/checkout@v4
+        with: { repository: selbstnull/netrunner-core, path: netrunner-proxy }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: aarch64-linux-android }
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with: { ndk-version: r27 }
+      - name: подготовка
+        working-directory: netrunner-browser
+        run: scripts/setup-upstream.sh
+      - name: cargo check (arm64)
+        working-directory: netrunner-browser
+        env:
+          TC: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin
+        run: |
+          export CC_aarch64_linux_android=$TC/aarch64-linux-android24-clang AR_aarch64_linux_android=$TC/llvm-ar
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TC/aarch64-linux-android24-clang
+          cargo check -p nrb --target aarch64-linux-android
+
+  engine:
+    if: ${{ inputs.servo_repo != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: netrunner-browser }
+      - uses: actions/checkout@v4
+        with: { repository: selbstnull/netrunner-core, path: netrunner-proxy }
+      - uses: actions/checkout@v4
+        with: { repository: "${{ inputs.servo_repo }}", ref: nrxp/0.7, path: nrxp-servo }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux: системные пакеты
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libclang-dev llvm-dev libfontconfig1-dev libfreetype-dev libunwind-dev libudev-dev libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgles2-mesa-dev libssl-dev libdbus-1-dev libvulkan-dev
+      - name: Windows: инструменты сборки Servo (MSVC, LLVM, Python, NASM)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install -y llvm nasm python3 cmake
+      - name: macOS: инструменты
+        if: runner.os == 'macOS'
+        run: brew install cmake python@3.12 pkg-config
+      - name: подготовка
+        shell: bash
+        working-directory: netrunner-browser
+        run: NRXP_SERVO_DIR="$GITHUB_WORKSPACE/nrxp-servo" scripts/setup-upstream.sh
+      - name: сборка nrb с движком
+        working-directory: netrunner-browser
+        run: cargo build --release -p nrb --features servo
+      - name: самопроверка запуска
+        shell: bash
+        working-directory: netrunner-browser
+        run: |
+          ./target/release/nrb version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nrb-${{ runner.os }}
+          path: |
+            netrunner-browser/target/release/nrb
+            netrunner-browser/target/release/nrb.exe
+          if-no-files-found: ignore

@@ -107,7 +107,7 @@ fn split_target(target: &str) -> Result<(String, String), String> {
 }
 
 fn default_key() -> Option<PathBuf> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let home = crate::platform::home_dir()?;
     ["id_ed25519", "id_rsa"]
         .iter()
         .map(|name| home.join(".ssh").join(name))

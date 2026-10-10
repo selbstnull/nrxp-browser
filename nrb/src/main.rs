@@ -16,6 +16,7 @@ mod gui_downloads;
 mod gui_nodes;
 mod hermetic;
 mod node;
+mod platform;
 mod profile;
 mod release;
 mod snap;

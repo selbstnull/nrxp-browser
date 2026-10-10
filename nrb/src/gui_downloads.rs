@@ -20,29 +20,9 @@ pub struct Handler {
     _runtime: Option<tokio::runtime::Runtime>,
 }
 
-/// Каталог загрузок: `XDG_DOWNLOAD_DIR` из `~/.config/user-dirs.dirs`, иначе `~/Downloads`.
+/// Каталог загрузок (правила по ОС — `platform::downloads_dir`).
 pub fn downloads_dir() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".config"));
-    if let Ok(text) = std::fs::read_to_string(config.join("user-dirs.dirs")) {
-        for line in text.lines() {
-            if let Some(value) = line.trim().strip_prefix("XDG_DOWNLOAD_DIR=") {
-                let value = value
-                    .trim()
-                    .trim_matches('"')
-                    .replace("$HOME", &home.to_string_lossy());
-                let path = PathBuf::from(value);
-                if path.is_absolute() && path != home {
-                    return path;
-                }
-            }
-        }
-    }
-    home.join("Downloads")
+    crate::platform::downloads_dir()
 }
 
 impl Handler {
@@ -153,8 +133,6 @@ impl DownloadHandler for Handler {
 
     fn open_dir(&self) {
         let _ = std::fs::create_dir_all(&self.dir);
-        let _ = std::process::Command::new("xdg-open")
-            .arg(&self.dir)
-            .spawn();
+        crate::platform::open_path(&self.dir);
     }
 }
