@@ -18,6 +18,8 @@ pub struct ToolbarState {
     pub tunnel: Option<(String, bool)>,
     /// Сколько запросов заблокировано блокировщиком с запуска (`None` — блокировщик выключен).
     pub blocked: Option<u64>,
+    /// Короткое сообщение о ходе длительной операции (печать в PDF) — справа в строке вкладок.
+    pub notice: Option<String>,
     /// Текущая страница в закладках (звезда закрашена).
     pub bookmarked: bool,
     /// Подсказки адресной строки: `(адрес, заголовок)`.
@@ -45,6 +47,7 @@ pub enum Action {
     OpenDownloads,
     Find,
     OpenSiteData,
+    Print,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -159,7 +162,7 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
             {
                 actions.push(Action::NewTab);
             }
-            if state.tunnel.is_some() || state.blocked.is_some() {
+            if state.tunnel.is_some() || state.blocked.is_some() || state.notice.is_some() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some((text, up)) = &state.tunnel {
                         let color = if *up {
@@ -172,6 +175,13 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
                         let (rect, _) =
                             ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                         ui.painter().circle_filled(rect.center(), 4.0, color);
+                    }
+                    if let Some(notice) = &state.notice {
+                        ui.label(
+                            egui::RichText::new(notice)
+                                .color(egui::Color32::from_rgb(250, 200, 50))
+                                .small(),
+                        );
                     }
                     if let Some(count) = state.blocked {
                         ui.label(
@@ -222,6 +232,10 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
                     }
                     if ui.button("Узлы              Ctrl+Shift+N").clicked() {
                         actions.push(Action::OpenNodes);
+                        ui.close();
+                    }
+                    if ui.button("Печать в PDF      Ctrl+P").clicked() {
+                        actions.push(Action::Print);
                         ui.close();
                     }
                     if ui.button("Найти на странице Ctrl+F").clicked() {

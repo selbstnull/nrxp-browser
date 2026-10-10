@@ -15,6 +15,7 @@ anyhow.workspace = true
 tracing.workspace = true
 url.workspace = true
 http = "1"
+nrb-pdf = { path = "../nrb-pdf" }
 dpi = "0.1"
 winit = "0.30"
 egui = "0.36"

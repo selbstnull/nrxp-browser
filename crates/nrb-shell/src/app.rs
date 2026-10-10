@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
 use nrb_engine::omnibox;
@@ -31,6 +32,7 @@ use crate::keys;
 use crate::library::{Library, LibraryAction, Panel};
 use crate::modal::{self, Modal};
 use crate::nodes::{NodeManager, NodesWindow};
+use crate::print::{PrintJob, Progress};
 use crate::site_data::SiteDataWindow;
 use crate::ui::{self, Action, TabInfo, ToolbarState};
 
@@ -383,6 +385,8 @@ struct Running {
     downloads_window: DownloadsWindow,
     find_bar: FindBar,
     site_data_window: SiteDataWindow,
+    print_job: Option<PrintJob>,
+    print_notice: Option<(String, Instant)>,
     next_badge_refresh: std::time::Instant,
     /// Очередь модальных запросов Servo; рисуется первое, остальные ждут.
     modals: std::collections::VecDeque<(Option<EmbedderControlId>, Modal)>,
@@ -416,6 +420,16 @@ impl ApplicationHandler<WakerEvent> for App {
 
     /// Бейдж туннеля меняется без событий окна — раз в секунду просим перерисовку.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Печать идёт по таймеру (пауза на отрисовку между полосами) — крутим цикл, пока задача жива.
+        if let App::Running(running) = self
+            && running.print_job.is_some()
+        {
+            running.spin();
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                std::time::Instant::now() + std::time::Duration::from_millis(40),
+            ));
+            return;
+        }
         if let App::Running(running) = self
             && running.tunnel.is_some()
         {
@@ -590,6 +604,7 @@ impl Running {
                 loading: false,
                 tunnel: None,
                 blocked: None,
+                notice: None,
                 bookmarked: false,
                 suggestions: Vec::new(),
                 suggest_open: false,
@@ -615,6 +630,8 @@ impl Running {
             downloads_window: DownloadsWindow::default(),
             find_bar: FindBar::default(),
             site_data_window: SiteDataWindow::default(),
+            print_job: None,
+            print_notice: None,
             saved_session: (
                 nrb_profile::SessionState::default(),
                 std::time::Instant::now(),
@@ -775,8 +792,60 @@ impl Running {
         self.window.request_redraw();
     }
 
+    fn start_print(&mut self) {
+        if self.print_job.is_some() {
+            return;
+        }
+        let (Some(tab), Some(handler)) = (self.active_tab().cloned(), self.downloads.clone())
+        else {
+            self.print_notice = Some((
+                "Печать недоступна: нет каталога загрузок".into(),
+                Instant::now() + Duration::from_secs(5),
+            ));
+            return;
+        };
+        self.print_job = Some(PrintJob::start(
+            tab,
+            Box::new(move |name| handler.reserve_file(name)),
+        ));
+    }
+
+    /// Ход печати: сообщение в тулбаре; по завершении — итог на несколько секунд и открытие окна «Загрузки».
+    fn poll_print(&mut self) {
+        let Some(job) = self.print_job.as_mut() else {
+            return;
+        };
+        match job.poll() {
+            Progress::Running(text) => {
+                self.print_notice = Some((text, Instant::now() + Duration::from_secs(2)));
+            }
+            Progress::Done(path) => {
+                let note = if job.truncated() {
+                    format!(
+                        "PDF сохранён (первые {} экранов): {}",
+                        crate::print::MAX_TILES,
+                        path.display()
+                    )
+                } else {
+                    format!("PDF сохранён: {}", path.display())
+                };
+                self.print_notice = Some((note, Instant::now() + Duration::from_secs(8)));
+                self.print_job = None;
+            }
+            Progress::Failed(error) => {
+                self.print_notice = Some((
+                    format!("Печать не удалась: {error}"),
+                    Instant::now() + Duration::from_secs(8),
+                ));
+                self.print_job = None;
+            }
+        }
+        self.window.request_redraw();
+    }
+
     fn spin(&mut self) {
         self.servo.spin_event_loop();
+        self.poll_print();
         self.start_pending_downloads();
         let new_tabs: Vec<WebView> = self.shared.new_tabs.borrow_mut().drain(..).collect();
         for webview in new_tabs {
@@ -1010,6 +1079,7 @@ impl Running {
             Action::OpenDownloads => self.downloads_window.toggle(),
             Action::Find => self.find_bar.open(),
             Action::OpenSiteData => self.site_data_window.toggle(),
+            Action::Print => self.start_print(),
             Action::ZoomIn => self.zoom(|z| z * 1.1),
             Action::ZoomOut => self.zoom(|z| z / 1.1),
             Action::ZoomReset => {
@@ -1060,6 +1130,7 @@ impl Running {
             _ if ctrl && shift && character == "n" => self.apply(Action::OpenNodes),
             _ if ctrl && !shift && character == "j" => self.apply(Action::OpenDownloads),
             _ if ctrl && !shift && character == "f" => self.apply(Action::Find),
+            _ if ctrl && !shift && character == "p" => self.apply(Action::Print),
             _ if ctrl && (character == "=" || character == "+") => self.apply(Action::ZoomIn),
             _ if ctrl && (character == "-" || character == "_") => self.apply(Action::ZoomOut),
             _ if ctrl && character == "0" => self.apply(Action::ZoomReset),
@@ -1252,6 +1323,11 @@ impl Running {
         let scale = self.window.scale_factor() as f32;
 
         self.toolbar.tunnel = self.tunnel.as_ref().map(|t| (t.summary(), t.up()));
+        self.toolbar.notice = self
+            .print_notice
+            .as_ref()
+            .filter(|(_, until)| *until > Instant::now())
+            .map(|(text, _)| text.clone());
         self.toolbar.blocked = (self.shared.blocker.is_some() && self.shared.adblock_on.get())
             .then(|| self.shared.blocked.get());
         let current_url = self

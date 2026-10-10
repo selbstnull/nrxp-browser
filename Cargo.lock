@@ -4810,6 +4810,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nrb-pdf"
+version = "0.0.1"
+dependencies = [
+ "image",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "nrb-profile"
 version = "0.0.1"
 dependencies = [
@@ -4837,6 +4845,7 @@ dependencies = [
  "nrb-adblock",
  "nrb-engine",
  "nrb-engine-servo",
+ "nrb-pdf",
  "nrb-profile",
  "tracing",
  "url",

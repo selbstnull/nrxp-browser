@@ -126,6 +126,10 @@ impl DownloadHandler for Handler {
         self.dir.display().to_string()
     }
 
+    fn reserve_file(&self, suggested_name: &str) -> Option<PathBuf> {
+        nrb_net::download::reserve_unique_path(&self.dir, suggested_name).ok()
+    }
+
     fn open_dir(&self) {
         let _ = std::fs::create_dir_all(&self.dir);
         let _ = std::process::Command::new("xdg-open")

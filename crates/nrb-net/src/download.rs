@@ -342,6 +342,36 @@ pub fn sanitize_file_name(name: &str) -> String {
     }
 }
 
+/// Резервирует свободный итоговый путь `<dir>/<имя>` (создаёт пустой файл, не затирая существующее): для файлов, которые приложение
+/// пишет само (печать в PDF). Имя предварительно очищается [`sanitize_file_name`].
+pub fn reserve_unique_path(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let name = sanitize_file_name(name);
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > 0 => (name[..dot].to_owned(), name[dot..].to_owned()),
+        _ => (name.clone(), String::new()),
+    };
+    for n in 0..1000u32 {
+        let candidate = if n == 0 {
+            name.clone()
+        } else {
+            format!("{stem} ({n}){ext}")
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.join(&candidate))
+        {
+            Ok(_) => return Ok(dir.join(candidate)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other(
+        "не удалось подобрать свободное имя файла",
+    ))
+}
+
 /// Создаёт `<dir>/<имя>.part` и резервирует свободное итоговое имя (`имя (1).ext`, …), не затирая существующее.
 fn create_unique(dir: &Path, name: &str) -> std::io::Result<(PathBuf, PathBuf, std::fs::File)> {
     let (stem, ext) = match name.rfind('.') {

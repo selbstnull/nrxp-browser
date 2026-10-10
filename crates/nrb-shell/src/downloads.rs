@@ -34,6 +34,8 @@ pub trait DownloadHandler: Send + Sync {
     /// Каталог загрузок (для показа и «Открыть папку»).
     fn dir(&self) -> String;
     fn open_dir(&self);
+    /// Свободный путь в каталоге загрузок под файл, который пишет сама оболочка (печать в PDF). Файл уже создан (пустой).
+    fn reserve_file(&self, suggested_name: &str) -> Option<std::path::PathBuf>;
 }
 
 /// Расширения, которые Servo показать не может (архивы, установщики, документы офиса, PDF, медиа-контейнеры).

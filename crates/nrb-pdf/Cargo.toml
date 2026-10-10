@@ -1,0 +1,11 @@
+[package]
+name = "nrb-pdf"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Растровая печать: длинный снимок страницы → постраничный PDF (JPEG-картинки на листах A4)"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+thiserror.workspace = true

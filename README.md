@@ -31,7 +31,8 @@
 | Загрузки файлов (Ctrl+J; куки из браузера, безопасное имя, отмена) | работает **по эвристике** (расширение файла в адресе, только GET); `Content-Disposition`, POST, `blob:` — нужен движок (N3b форка) |
 | Поиск по странице (Ctrl+F; подсветка, счётчик, переходы) | работает скриптом в странице (меняет DOM на время поиска); без shadow DOM и чужих iframe |
 | Данные сайтов (Ctrl+Shift+Del: куки, localStorage, sessionStorage, удаление) | работает; сторонние куки и разрешения — в движке (N4b) |
-| Печать, менеджер паролей, MSE-видео (YouTube и т. п.), расширения WebExtensions | нет: в Servo 0.7 нет страничной вёрстки, MSE и нужных хуков — см. план форка `nrxp-servo` |
+| Печать в PDF (Ctrl+P) | работает **как картинки** (снимок страницы полосами → листы A4; `scripts/gui-print.sh`); текст в PDF не выделяется — настоящая печать требует страничной вёрстки в движке |
+| Менеджер паролей, MSE-видео (YouTube и т. п.), расширения WebExtensions | нет: в Servo 0.7 нет MSE и нужных хуков — см. план форка `nrxp-servo` |
 
 План — [docs/ITERATIONS.md](docs/ITERATIONS.md) (рабочий файл), журнал — [docs/PROGRESS.md](docs/PROGRESS.md),
 архитектура — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), факты и результаты спайков — [docs/research/NOTES.md](docs/research/NOTES.md).
@@ -81,6 +82,7 @@ scripts/gui-downloads.sh                      # загрузка файла с �
 scripts/gui-find.sh                           # поиск по странице
 scripts/gui-sitedata.sh                       # окно «Данные сайтов»
 scripts/gui-clipboard.sh                      # буфер обмена страницы
+scripts/gui-print.sh                          # печать в PDF (нужен poppler-utils для проверки)
 scripts/egress-e2e.sh                         # reverse-egress: клиент → узел → домашний выход (3 процесса, loopback)
 scripts/deploy-e2e.sh                         # деплой в тестовый контейнер с systemd (нужен docker)
 ```
