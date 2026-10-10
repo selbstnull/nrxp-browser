@@ -36,7 +36,7 @@ use crate::modal::{self, Modal, feature_key};
 use crate::nodes::{NodeManager, NodesWindow};
 use crate::print::{PrintJob, Progress};
 use crate::site_data::SiteDataWindow;
-use crate::ui::{self, Action, TabInfo, ToolbarState};
+use crate::ui::{self, Action, TabAudioState, TabInfo, ToolbarState};
 
 /// Состояние туннеля для индикатора в тулбаре. Реализует вызывающий код (`nrb`), оболочка о NRXP ничего не знает.
 pub trait TunnelStatus: Send + Sync {
@@ -135,6 +135,10 @@ struct Shared {
     engine_downloads: RefCell<Vec<(IncomingDownload, DownloadStream)>>,
     /// Запомненные решения о разрешениях: (источник, ключ возможности) → разрешено. Копия таблицы профиля для делегата.
     permissions: RefCell<std::collections::HashMap<(String, String), bool>>,
+    /// Вкладки, где страница дошла до `HeadParsed`/`Complete`: туда нужно (пере)применить звуковую политику.
+    audio_apply: RefCell<Vec<WebViewId>>,
+    /// Ответы опроса звука: (вкладка, звучит ли).
+    audio_inbox: Rc<RefCell<Vec<(WebViewId, bool)>>>,
 }
 
 fn load_permissions(
@@ -147,6 +151,9 @@ fn load_permissions(
         .map(|p| ((p.origin, p.feature), p.allow))
         .collect()
 }
+
+/// Встроенный скрипт звука (во всех фреймах): политика автовоспроизведения, заглушение вкладки, состояние для индикатора.
+const AUDIO_JS: &str = include_str!("audio.js");
 
 /// Политика сторонних куки живёт в настройках движка и читается сетевым потоком на каждый запрос — меняется на лету.
 fn apply_cookie_policy(settings: &nrb_profile::Settings) {
@@ -196,6 +203,9 @@ impl WebViewDelegate for Delegate {
     fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
         if status == LoadStatus::Complete {
             self.0.completed.borrow_mut().push(webview.id());
+        }
+        if matches!(status, LoadStatus::HeadParsed | LoadStatus::Complete) {
+            self.0.audio_apply.borrow_mut().push(webview.id());
         }
         self.0.redraw();
     }
@@ -460,6 +470,10 @@ struct Running {
     print_job: Option<PrintJob>,
     print_notice: Option<(String, Instant)>,
     next_badge_refresh: std::time::Instant,
+    /// Звук вкладок: опрос раз в 1,5 с; заглушённые вкладки и последнее известное «звучит».
+    next_audio_poll: std::time::Instant,
+    muted_tabs: std::collections::HashSet<WebViewId>,
+    audible_tabs: std::collections::HashSet<WebViewId>,
     /// Очередь модальных запросов Servo; рисуется первое, остальные ждут.
     modals: std::collections::VecDeque<(Option<EmbedderControlId>, Modal)>,
     /// Окно в полноэкранном режиме (F11 или запрос страницы): тулбар скрыт.
@@ -502,17 +516,20 @@ impl ApplicationHandler<WakerEvent> for App {
             ));
             return;
         }
-        if let App::Running(running) = self
-            && running.tunnel.is_some()
-        {
+        if let App::Running(running) = self {
             let now = std::time::Instant::now();
-            if now >= running.next_badge_refresh {
+            if running.tunnel.is_some() && now >= running.next_badge_refresh {
                 running.next_badge_refresh = now + std::time::Duration::from_secs(1);
                 running.window.request_redraw();
             }
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
-                running.next_badge_refresh,
-            ));
+            // Звук вкладок опрашивается по таймеру: будим цикл к ближайшему сроку.
+            running.poll_audio();
+            let wake = if running.tunnel.is_some() {
+                running.next_badge_refresh.min(running.next_audio_poll)
+            } else {
+                running.next_audio_poll
+            };
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(wake));
         }
     }
 
@@ -601,8 +618,10 @@ impl Running {
             servo.set_delegate(Rc::new(EngineDelegate));
         }
         // Пользовательские скрипты применяются при загрузке страницы (менеджер общий для всех вкладок).
-        let user_content = (!config.userscripts.is_empty()).then(|| {
+        let user_content = Some({
             let manager = Rc::new(UserContentManager::new(&servo));
+            // Звуковая политика (автовоспроизведение, заглушение вкладки) — всегда, до пользовательских скриптов.
+            manager.add_script(Rc::new(UserScript::new(AUDIO_JS.to_owned(), None)));
             for js in &config.userscripts {
                 manager.add_script(Rc::new(UserScript::new(js.clone(), None)));
             }
@@ -627,6 +646,8 @@ impl Running {
             download_requests: RefCell::default(),
             engine_downloads: RefCell::default(),
             permissions: RefCell::default(),
+            audio_apply: RefCell::default(),
+            audio_inbox: Rc::default(),
             completed: RefCell::default(),
             titled: RefCell::default(),
         });
@@ -693,6 +714,9 @@ impl Running {
             exit: false,
             tunnel: config.tunnel,
             next_badge_refresh: std::time::Instant::now(),
+            next_audio_poll: std::time::Instant::now(),
+            muted_tabs: Default::default(),
+            audible_tabs: Default::default(),
             modals: Default::default(),
             fullscreen: false,
             favicons: Default::default(),
@@ -941,6 +965,7 @@ impl Running {
     fn spin(&mut self) {
         self.servo.spin_event_loop();
         self.poll_print();
+        self.poll_audio();
         self.start_pending_downloads();
         let new_tabs: Vec<WebView> = self.shared.new_tabs.borrow_mut().drain(..).collect();
         for webview in new_tabs {
@@ -1065,6 +1090,66 @@ impl Running {
         self.toolbar.suggestions.truncate(6);
     }
 
+    /// Скрипт настройки звука вкладки: политика автовоспроизведения из настроек и признак «заглушена».
+    fn audio_config_script(&self, id: WebViewId) -> String {
+        format!(
+            "window.__nrbAudio && window.__nrbAudio.config({{blockAutoplay: {}, tabMuted: {}}})",
+            !self.settings.autoplay_with_sound,
+            self.muted_tabs.contains(&id)
+        )
+    }
+
+    fn apply_audio_config(&self, tab: &WebView) {
+        tab.evaluate_javascript(self.audio_config_script(tab.id()), |_| {});
+    }
+
+    fn toggle_mute(&mut self, index: usize) {
+        let Some(tab) = self.tabs.get(index).cloned() else {
+            return;
+        };
+        if !self.muted_tabs.remove(&tab.id()) {
+            self.muted_tabs.insert(tab.id());
+        }
+        self.apply_audio_config(&tab);
+        self.window.request_redraw();
+    }
+
+    /// Раз в 1,5 с спрашивает у каждой вкладки, звучит ли она, и применяет принесённые ответы.
+    fn poll_audio(&mut self) {
+        let apply: Vec<WebViewId> = self.shared.audio_apply.borrow_mut().drain(..).collect();
+        for id in apply {
+            if let Some(tab) = self.tabs.iter().find(|t| t.id() == id) {
+                self.apply_audio_config(tab);
+            }
+        }
+        for (id, playing) in self.shared.audio_inbox.borrow_mut().drain(..) {
+            if playing {
+                self.audible_tabs.insert(id);
+            } else {
+                self.audible_tabs.remove(&id);
+            }
+        }
+        let now = std::time::Instant::now();
+        if now < self.next_audio_poll {
+            return;
+        }
+        self.next_audio_poll = now + std::time::Duration::from_millis(1500);
+        for tab in &self.tabs {
+            let (id, inbox) = (tab.id(), self.shared.audio_inbox.clone());
+            tab.evaluate_javascript(
+                "window.__nrbAudio ? window.__nrbAudio.state() : ''",
+                move |result| {
+                    let playing = matches!(
+                        result,
+                        Ok(nrb_engine_servo::servo::JSValue::String(json)) if json.contains("\"playing\":true")
+                    );
+                    inbox.borrow_mut().push((id, playing));
+                },
+            );
+        }
+        self.window.request_redraw();
+    }
+
     /// Перечитывает запомненные решения из профиля (после сброса в настройках).
     fn reload_permissions(&mut self) {
         *self.shared.permissions.borrow_mut() = load_permissions(&self.store);
@@ -1074,6 +1159,9 @@ impl Running {
         self.search = self.settings.search.clone();
         self.shared.adblock_on.set(self.settings.adblock);
         apply_cookie_policy(&self.settings);
+        for tab in &self.tabs {
+            self.apply_audio_config(tab);
+        }
         self.egui_ctx.set_visuals(match self.settings.theme {
             nrb_profile::Theme::Dark => egui::Visuals::dark(),
             nrb_profile::Theme::Light => egui::Visuals::light(),
@@ -1172,6 +1260,7 @@ impl Running {
             }
             Action::CloseTab(index) => self.close_tab(index),
             Action::SelectTab(index) => self.select_tab(index),
+            Action::ToggleMute(index) => self.toggle_mute(index),
             Action::ToggleBookmark => self.toggle_bookmark(),
             Action::OpenHistory => self.library.toggle(Panel::History),
             Action::OpenBookmarks => self.library.toggle(Panel::Bookmarks),
@@ -1237,6 +1326,8 @@ impl Running {
             _ if ctrl && character == "0" => self.apply(Action::ZoomReset),
             _ if ctrl && character == "t" => self.apply(Action::NewTab),
             _ if ctrl && character == "w" => self.apply(Action::CloseTab(self.active)),
+            // Ctrl+M — заглушить/вернуть звук активной вкладки (как в Firefox).
+            _ if ctrl && !shift && character == "m" => self.apply(Action::ToggleMute(self.active)),
             _ if ctrl && character == "l" => self.toolbar.focus_url = true,
             _ if ctrl && character == "r" => self.apply(Action::Reload),
             _ => return false,
@@ -1468,6 +1559,13 @@ impl Running {
                     .unwrap_or_else(|| "Новая вкладка".into()),
                 active: index == self.active,
                 loading: index == self.active && tab.load_status() != LoadStatus::Complete,
+                audio: if self.muted_tabs.contains(&tab.id()) {
+                    TabAudioState::Muted
+                } else if self.audible_tabs.contains(&tab.id()) {
+                    TabAudioState::Playing
+                } else {
+                    TabAudioState::Silent
+                },
             })
             .collect();
         if let Some(tab) = self.tabs.get(self.active) {

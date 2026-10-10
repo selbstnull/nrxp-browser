@@ -5,6 +5,16 @@ pub struct TabInfo {
     pub title: String,
     pub active: bool,
     pub loading: bool,
+    /// Звук вкладки: что-то звучит / вкладка заглушена.
+    pub audio: TabAudioState,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabAudioState {
+    #[default]
+    Silent,
+    Playing,
+    Muted,
 }
 
 pub struct ToolbarState {
@@ -39,6 +49,8 @@ pub enum Action {
     NewTab,
     CloseTab(usize),
     SelectTab(usize),
+    /// Включить/выключить звук вкладки (значок динамика).
+    ToggleMute(usize),
     ToggleBookmark,
     OpenHistory,
     OpenBookmarks,
@@ -51,6 +63,52 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+}
+
+/// Динамик вкладки: рисуем сами (в шрифте egui нет «🔊/🔇»). Перечёркнут — вкладка заглушена.
+fn speaker(ui: &mut egui::Ui, muted: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+    let color = if muted {
+        egui::Color32::from_rgb(230, 90, 80)
+    } else {
+        ui.visuals().widgets.inactive.fg_stroke.color
+    };
+    let c = rect.center();
+    let stroke = egui::Stroke::new(1.5, color);
+    // Корпус: прямоугольник и раструб.
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            c + egui::vec2(-6.0, -2.5),
+            c + egui::vec2(-3.0, -2.5),
+            c + egui::vec2(1.0, -6.0),
+            c + egui::vec2(1.0, 6.0),
+            c + egui::vec2(-3.0, 2.5),
+            c + egui::vec2(-6.0, 2.5),
+        ],
+        color,
+        egui::Stroke::NONE,
+    ));
+    if muted {
+        ui.painter().line_segment(
+            [c + egui::vec2(3.0, -4.0), c + egui::vec2(8.0, 4.0)],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [c + egui::vec2(3.0, 4.0), c + egui::vec2(8.0, -4.0)],
+            stroke,
+        );
+    } else {
+        for radius in [3.5_f32, 6.5] {
+            let points: Vec<egui::Pos2> = (-3..=3)
+                .map(|i| {
+                    let a = i as f32 * 0.25;
+                    c + egui::vec2(2.0 + a.cos() * radius, a.sin() * radius)
+                })
+                .collect();
+            ui.painter().add(egui::Shape::line(points, stroke));
+        }
+    }
+    response
 }
 
 /// Звезда закладки: рисуем сами (в шрифте egui нет «★/☆»).
@@ -145,6 +203,17 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
                 );
                 if ui.selectable_label(tab.active, label).clicked() {
                     actions.push(Action::SelectTab(index));
+                }
+                if tab.audio != TabAudioState::Silent
+                    && speaker(ui, tab.audio == TabAudioState::Muted)
+                        .on_hover_text(if tab.audio == TabAudioState::Muted {
+                            "Включить звук вкладки"
+                        } else {
+                            "Отключить звук вкладки"
+                        })
+                        .clicked()
+                {
+                    actions.push(Action::ToggleMute(index));
                 }
                 if ui
                     .small_button("x")

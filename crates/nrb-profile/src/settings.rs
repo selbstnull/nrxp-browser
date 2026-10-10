@@ -31,6 +31,8 @@ pub struct Settings {
     pub adblock: bool,
     /// Не отправлять и не сохранять куки сторонних запросов (подресурсы и фреймы другого сайта). Нужен форк `nrxp-servo` (N4b).
     pub block_third_party_cookies: bool,
+    /// Разрешать автовоспроизведение со звуком без действия пользователя (по умолчанию нет: ролик со звуком ждёт клика).
+    pub autoplay_with_sound: bool,
 }
 
 impl Default for Settings {
@@ -44,6 +46,7 @@ impl Default for Settings {
             record_history: true,
             adblock: true,
             block_third_party_cookies: false,
+            autoplay_with_sound: false,
         }
     }
 }

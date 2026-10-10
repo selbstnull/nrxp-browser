@@ -224,6 +224,9 @@ impl Library {
                     "Блокировать сторонние куки (запросы к другому сайту не получают и не ставят куки; вход через сторонние окна может не работать)",
                 )
                 .changed();
+            changed |= ui
+                .checkbox(&mut settings.autoplay_with_sound, "Разрешать автовоспроизведение со звуком (иначе ролик со звуком ждёт клика)")
+                .changed();
             ui.separator();
             egui::CollapsingHeader::new("Разрешения сайтов").show(ui, |ui| {
                 match store.permissions() {

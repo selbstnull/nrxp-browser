@@ -1,15 +1,21 @@
 <!doctype html><meta charset=utf-8><title>media: init</title>
 <style>video{position:absolute;left:20px;top:20px;width:480px;height:270px;background:#222}</style>
-<video id=v muted playsinline></video>
+<video id=v playsinline></video>
+<button id=b style="position:absolute;left:20px;top:310px;width:200px;height:50px;font-size:22px" onclick="v.play().catch(function (e) { status('play-rejected ' + e.name); })">play</button>
 <script>
   // ?src=clip.webm — какой файл играть; в заголовок пишем прогресс, чтобы сценарий читал его снаружи.
   var src = new URLSearchParams(location.search).get('src') || 'clip.webm';
   var v = document.getElementById('v');
+  // ?muted=1 — без звука (по умолчанию звук включён: сценарий gui-audio.sh ищет аудиопоток в PipeWire).
+  v.muted = new URLSearchParams(location.search).get('muted') === '1';
   function status(s) { document.title = 'media: ' + s; }
   v.addEventListener('error', function () { status('error code=' + (v.error && v.error.code) + ' ' + (v.error && v.error.message)); });
   v.addEventListener('loadedmetadata', function () { status('meta ' + v.videoWidth + 'x' + v.videoHeight + ' dur=' + v.duration.toFixed(1)); });
-  v.addEventListener('timeupdate', function () { if (!v.ended) status('playing t=' + v.currentTime.toFixed(1)); });
+  // timeupdate в Servo приходит нерегулярно — прогресс пишем по таймеру.
+  setInterval(function () { if (!v.paused && !v.ended) status('playing t=' + v.currentTime.toFixed(1)); }, 400);
   v.addEventListener('ended', function () { status('ended t=' + v.currentTime.toFixed(1)); });
   v.src = src;
-  v.play().catch(function (e) { status('play-rejected ' + e); });
+  // ?auto=0 — сам не запускать, ждать кнопки (проверка политики автовоспроизведения).
+  // Автозапуск — после небольшой паузы, как на настоящих сайтах (скрипты пользователя в Servo исполняются отложенной задачей после <head>).
+  if (new URLSearchParams(location.search).get('auto') !== '0') setTimeout(function () { v.play().catch(function (e) { status('play-rejected ' + e.name); }); }, 500);
 </script>

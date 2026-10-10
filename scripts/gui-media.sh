@@ -21,7 +21,7 @@ SRV=$!
 for _ in $(seq 1 30); do ss -tln | grep -q ":$PORT " && break; sleep 0.2; done
 
 play() { # формат, файл
-  gui_launch "$NRB" --private "http://127.0.0.1:$PORT/media.html?src=$2"; sleep 3
+  gui_launch "$NRB" --private "http://127.0.0.1:$PORT/media.html?src=$2&muted=1"; sleep 3
   check_wait "$1: метаданные загрузились" "media: " 8
   local t="" ok=0
   for _ in $(seq 1 40); do t=$(title); [[ "$t" == *"ended"* ]] && ok=1 && break; [[ "$t" == *"error"* ]] && break; sleep 0.5; done
