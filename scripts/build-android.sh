@@ -19,12 +19,20 @@ export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
 # 1. Нативная часть. Профиль release для Servo — десятки минут; debug быстрее, но .so на сотни МБ.
 # shellcheck disable=SC2086
 scripts/lowload.sh cargo ndk -t arm64-v8a -o "$STAGE/lib" build -p nrb-android $CARGO_FLAGS
-ls -la "$STAGE/lib/arm64-v8a/"
+LIBS="$STAGE/lib/arm64-v8a"
+# Лишние cdylib зависимостей (libnetrunner_logger.so) приложению не нужны; C++ runtime нужен (mozjs/Servo), берём из NDK.
+find "$LIBS" -name '*.so' ! -name 'libnrb_android.so' -delete
+cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$LIBS/"
+# Таблица символов не нужна на устройстве (отладочной информации и так нет): без неё .so в несколько раз меньше.
+"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "$LIBS/libnrb_android.so"
+ls -la "$LIBS"
 
 # 2. Манифест → пустой APK (aapt2), 3. нативные библиотеки внутрь (без сжатия: так их можно отображать в память напрямую).
+rm -f "$OUT/app-unsigned.apk"
 "$BT/aapt2" link -o "$OUT/app-unsigned.apk" --manifest android/AndroidManifest.xml -I "$JAR" \
-  --min-sdk-version 24 --target-sdk-version 35 --version-code 1 --version-name 0.0.1 -f
-(cd "$STAGE" && zip -0 -qr "../app-unsigned.apk" lib)
+  --min-sdk-version 24 --target-sdk-version 35 --version-code 1 --version-name 0.0.1
+# Со сжатием: манифест просит распаковку библиотек при установке (extractNativeLibs), поэтому прямое отображение не нужно.
+(cd "$STAGE" && zip -9 -qr "../app-unsigned.apk" lib)
 
 # 4. Выравнивание и подпись отладочным ключом (создаётся при отсутствии).
 KS="${KEYSTORE:-$HOME/.android/debug.keystore}"

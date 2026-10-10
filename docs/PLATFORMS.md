@@ -8,7 +8,7 @@
 | **Linux x86_64** | всё работает | сборка с движком, 136 тестов, GUI-сценарии (Xephyr), узел, деплой, герметичный режим, видео, звук (PipeWire), WebRTC relay | Wayland, другие дистрибутивы, aarch64 |
 | **Windows x86_64** | код без движка готов к сборке | `cargo check -p nrb --target x86_64-pc-windows-gnu` проходит (узел, туннель, загрузки, обновления, профиль); правила путей (`nrb/src/platform.rs`) покрыты тестами | **движок Servo не собирался**: нужен целевой `x86_64-pc-windows-msvc` (mozjs не поддерживает gnu — проверено: `mozjs_sys` падает), то есть сборка только на Windows/MSVC; окно, ввод, GStreamer и WebRTC на Windows не запускались |
 | **macOS (arm64/x86_64)** | код без движка готов | правила путей (`~/Library/Application Support`, `~/Downloads`, `open`) покрыты тестами | не собиралось вообще (нужен macOS SDK; в среде его нет); движок и GUI не проверены |
-| **Android arm64** | компилируется, **запускаться нечему** | `cargo check -p nrb --target aarch64-linux-android` (без движка) и `cargo check -p nrb-engine-servo --target aarch64-linux-android` (с Servo) проходят с NDK r27 | нет точки входа и упаковки приложения (ниже); нет эмулятора и устройства в среде — ничего не запускалось |
+| **Android arm64** | **APK собирается** (`scripts/build-android.sh`: debug, 63 МБ, подписан отладочным ключом; на устройстве не запускался) | `cargo check -p nrb --target aarch64-linux-android` (без движка) и `cargo check -p nrb-engine-servo --target aarch64-linux-android` (с Servo) проходят с NDK r27 | нет точки входа и упаковки приложения (ниже); нет эмулятора и устройства в среде — ничего не запускалось |
 | **iOS** | **не выполнимо на этом движке** | — | у Servo нет порта на iOS (в его дереве `ios` встречается только в списках исключений мультипроцесса), у `surfman`/WebRender нет iOS-бэкенда; см. ниже |
 
 ## Что сделано для переносимости
@@ -32,7 +32,11 @@ Servo официально собирается на обеих (servoshell). Р
 (`libnice-10.dll`, `libnice.10.dylib`) заложено по документации, не проверено. `nrb deploy` вызывает SSH-клиент — на Windows
 нужен OpenSSH. Герметичный режим только Linux.
 
-## Android: от «компилируется» до приложения
+## Android: скелет приложения и что дальше
+
+**Сделано (2026-10-10):** крейт `crates/nrb-android` (`android_main`, NativeActivity без Java), `nrb-shell` принимает `AndroidApp` (`run_android`), тач-события уходят в Servo, кнопка «Назад» (назад по истории, без истории — сворачивание), приостановка/возврат поверхности (пока без пересоздания контекста), каталоги данных из приложения; `scripts/build-android.sh` собирает APK без Gradle (cargo-ndk → aapt2 → zipalign → apksigner; `--install` ставит через adb). Проверено: `libnrb_android.so` экспортирует `ANativeActivity_onCreate` и `android_main`, `aapt2 dump badging` показывает launchable-activity и arm64-v8a. **Не проверено ничем: запуск на устройстве.** Скелет ходит в сеть напрямую (без туннеля NRXP), без загрузок, без WebRTC. Остаётся то, что ниже:
+
+### Что осталось
 
 Подтверждено только то, что код (включая Servo) проходит `cargo check` под arm64. Чтобы это стало приложением:
 

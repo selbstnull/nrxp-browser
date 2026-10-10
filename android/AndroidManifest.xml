@@ -6,6 +6,7 @@
     <application
         android:label="nrb"
         android:hasCode="false"
+        android:extractNativeLibs="true"
         android:usesCleartextTraffic="true"
         android:allowBackup="false"
         android:theme="@android:style/Theme.NoTitleBar">
