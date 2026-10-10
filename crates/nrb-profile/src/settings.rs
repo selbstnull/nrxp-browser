@@ -29,6 +29,8 @@ pub struct Settings {
     pub record_history: bool,
     /// Блокировать рекламу и трекеры по спискам из каталога `filters/` профиля.
     pub adblock: bool,
+    /// Не отправлять и не сохранять куки сторонних запросов (подресурсы и фреймы другого сайта). Нужен форк `nrxp-servo` (N4b).
+    pub block_third_party_cookies: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +43,7 @@ impl Default for Settings {
             restore_session: true,
             record_history: true,
             adblock: true,
+            block_third_party_cookies: false,
         }
     }
 }
@@ -104,6 +107,7 @@ mod tests {
             theme: Theme::Light,
             default_zoom: 1.25,
             homepage: "https://example.org".into(),
+            block_third_party_cookies: true,
             ..Settings::default()
         };
         settings.save(dir.path()).unwrap();

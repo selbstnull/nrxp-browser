@@ -135,6 +135,16 @@ struct Shared {
     engine_downloads: RefCell<Vec<(IncomingDownload, DownloadStream)>>,
 }
 
+/// Политика сторонних куки живёт в настройках движка и читается сетевым потоком на каждый запрос — меняется на лету.
+fn apply_cookie_policy(settings: &nrb_profile::Settings) {
+    use nrb_engine_servo::servo::prefs;
+    let mut preferences = prefs::get().clone();
+    if preferences.network_block_third_party_cookies != settings.block_third_party_cookies {
+        preferences.network_block_third_party_cookies = settings.block_third_party_cookies;
+        prefs::set(preferences);
+    }
+}
+
 /// Адрес источника для подписи окон: `https://host`; для страниц без хоста — полный URL.
 fn origin_of(webview: &WebView) -> String {
     match webview.url() {
@@ -604,6 +614,7 @@ impl Running {
             ),
         };
         shared.adblock_on.set(settings.adblock);
+        apply_cookie_policy(&settings);
         egui_ctx.set_visuals(match settings.theme {
             nrb_profile::Theme::Dark => egui::Visuals::dark(),
             nrb_profile::Theme::Light => egui::Visuals::light(),
@@ -1019,6 +1030,7 @@ impl Running {
     fn apply_settings(&mut self) {
         self.search = self.settings.search.clone();
         self.shared.adblock_on.set(self.settings.adblock);
+        apply_cookie_policy(&self.settings);
         self.egui_ctx.set_visuals(match self.settings.theme {
             nrb_profile::Theme::Dark => egui::Visuals::dark(),
             nrb_profile::Theme::Light => egui::Visuals::light(),
