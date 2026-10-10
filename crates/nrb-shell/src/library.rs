@@ -190,7 +190,7 @@ impl Library {
             let mut changed = false;
             ui.horizontal(|ui| {
                 ui.label("Поисковая система");
-                let current = SEARCH_ENGINES.iter().find(|(_, template)| *template == settings.search).map_or("Своя", |(name, _)| *name);
+                let current = SEARCH_ENGINES.iter().find(|(_, template)| *template == settings.search).map_or("DuckDuckGo", |(name, _)| *name);
                 egui::ComboBox::from_id_salt("search-engine").selected_text(current).show_ui(ui, |ui| {
                     for (name, template) in SEARCH_ENGINES {
                         if ui.selectable_label(settings.search == *template, *name).clicked() {
@@ -199,10 +199,6 @@ impl Library {
                         }
                     }
                 });
-            });
-            ui.horizontal(|ui| {
-                ui.label("Шаблон поиска");
-                changed |= ui.add(egui::TextEdit::singleline(&mut settings.search).desired_width(f32::INFINITY)).changed();
             });
             ui.horizontal(|ui| {
                 ui.label("Домашняя страница");

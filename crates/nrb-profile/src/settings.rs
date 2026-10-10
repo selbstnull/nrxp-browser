@@ -48,13 +48,10 @@ impl Default for Settings {
     }
 }
 
-/// Готовые поисковики для окна настроек.
+/// Поисковики браузера. Других нет: произвольный шаблон (в том числе из `settings.toml`) не принимается.
 pub const SEARCH_ENGINES: &[(&str, &str)] = &[
     ("DuckDuckGo", "https://duckduckgo.com/?q={}"),
     ("Google", "https://www.google.com/search?q={}"),
-    ("Bing", "https://www.bing.com/search?q={}"),
-    ("Яндекс", "https://yandex.ru/search/?text={}"),
-    ("Brave", "https://search.brave.com/search?q={}"),
 ];
 
 impl Settings {
@@ -80,10 +77,14 @@ impl Settings {
         Ok(())
     }
 
-    /// Приводит значения к допустимым (масштаб, шаблон поиска).
+    /// Приводит значения к допустимым (масштаб, поисковик).
     fn sanitized(mut self) -> Self {
         self.default_zoom = self.default_zoom.clamp(0.3, 5.0);
-        if !self.search.contains("{}") {
+        // Только поисковики из списка: прежние настройки с другим шаблоном (Яндекс, Bing, Brave, свой) возвращаются к умолчанию.
+        if !SEARCH_ENGINES
+            .iter()
+            .any(|(_, template)| *template == self.search)
+        {
             self.search = Self::default().search;
         }
         self
@@ -93,6 +94,28 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_listed_search_engines_survive_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |text: &str| std::fs::write(dir.path().join("settings.toml"), text).unwrap();
+        for old in [
+            "https://yandex.ru/search/?text={}",
+            "https://www.bing.com/search?q={}",
+            "https://search.brave.com/search?q={}",
+            "https://my.example/?q={}",
+        ] {
+            write(&format!("search = \"{old}\"\n"));
+            assert_eq!(
+                Settings::load(dir.path()).unwrap().search,
+                Settings::default().search,
+                "{old}"
+            );
+        }
+        let google = SEARCH_ENGINES[1].1;
+        write(&format!("search = \"{google}\"\n"));
+        assert_eq!(Settings::load(dir.path()).unwrap().search, google);
+    }
 
     #[test]
     fn defaults_when_missing() {

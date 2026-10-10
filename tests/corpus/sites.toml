@@ -140,13 +140,6 @@ url = "https://www.google.com/"
 expect = "Google"
 
 [[site]]
-id = "yandex"
-category = "search"
-url = "https://yandex.ru/"
-# Вне РФ yandex.ru ведёт через SSO-цепочку на dzen.ru (заголовок «Дзен…»), в РФ — «Яндекс»: заголовок не проверяем, только непустой кадр.
-expect = ""
-
-[[site]]
 id = "github"
 category = "dev"
 url = "https://github.com/"
