@@ -1,30 +1,90 @@
-From 4c20ab2ad1e50f17fce7ba43fe0f438ba6d08c6d Mon Sep 17 00:00:00 2001
+From a43a0770035d928b267e6fc69c67033163e833d5 Mon Sep 17 00:00:00 2001
 From: nineap <trkir21@gmail.com>
-Date: Wed, 7 Oct 2026 23:35:48 +0700
-Subject: [PATCH] =?UTF-8?q?feat(core):=20reverse=20egress=20=E2=80=94=20a?=
- =?UTF-8?q?=20dialing=20node=20serves=20as=20exit=20for=20the=20ingress's?=
- =?UTF-8?q?=20clients?=
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
+Date: Sat, 10 Oct 2026 10:41:55 +0700
+Subject: [PATCH] feat(core): reverse egress + reliable Connect delivery
 
-Dialer: ClientHandler::connect_egress (egress: token, RemoteOpener with EgressPolicy,
-TCP legs only). Acceptor: ServerHandler::with_reverse_egress registry, ExitMode
-(Local/Prefer/Require, fail closed), flows routed over a MeshPeerSession view.
-Default policy refuses loopback/private/link-local/CGNAT/metadata targets.
-open_via_mesh bridge extracted into bridge_via_peer.
+Why
+---
+1. A browser (or any client) opening dozens of connections at once lost
+   some of them for good: `Connect` frames went through `try_send` into a
+   leg's 16-slot control queue, a full queue dropped the frame with only a
+   rate-limited WARN, and since a Connect is never retried and carries no
+   ack, the local socket hung forever. Measured with the new
+   `connect_burst` tool (64 simultaneous streams x 3 rounds, local echo
+   target): old client 63/192 echoed, 129 hung; with this change 192/192,
+   0 hung. Connect (all variants) is now a critical frame like
+   Close/Heartbeat/Credit: `send().await`, which stalls only the per-stream
+   task that issued it.
+
+2. Nodes behind NAT (a home PC, a router) had no way to be an exit. With
+   reverse egress the node dials OUT to an ingress (token
+   `egress:<label>:<client token>`) and serves as the exit for flows of that
+   ingress's own clients. Data-plane roles follow `StreamHandler::opener`,
+   not who dialed: the dialer's handler opens targets, the acceptor keeps
+   `opener == None` for that session and opens streams towards the dialer
+   through a `MeshPeerSession` view (same bridge as mesh hops,
+   `bridge_via_peer`).
+
+What
+----
+* `ServerHandler::with_reverse_egress(registry)` enables the role on an
+  ingress; without a registry `egress:` tokens are refused (before, they
+  were treated as ordinary tokens).
+* `AuthValidator::validate_egress` - default-deny. An ordinary client token
+  must not grant the exit role (anyone could otherwise capture other
+  clients' traffic); it needs `require_auth` and a validator.
+* `ExitMode` (Local default / Prefer / Require) and per-client `ExitPolicy`
+  (Default / Local / Egress(label)). `Require` and a missing labelled
+  egress fail closed: the flow is closed, never exited from the ingress.
+  UDP flows are closed instead of leaking out locally while a remote exit
+  is wanted.
+* `EgressPolicy` on the dialing side: loopback/private/link-local/CGNAT/
+  metadata targets refused by default (`allow_private` opts in), the
+  checked address is the one connected to (no second resolution, DNS
+  rebinding cannot swap it), `max_streams` caps concurrent flows (extras
+  get Close, the slot is held until the flow ends).
+* The dialer is TCP-only (no datagram leg).
+* `tools/loadtest`: `connect_burst` binary (public client API only, builds
+  against the old core too, for before/after comparison).
+* docs/REVERSE_EGRESS.md.
+
+Compatibility
+-------------
+No wire changes: no new frame types, same handshake. Cross-version matrix
+(real `netrunner-server` process + `connect_burst`, 64 streams x 3 rounds):
+  old client / old server:   63 echoed, 129 hung
+  old client / new server:   80 echoed, 112 hung  (works, old client bug)
+  new client / old server:  192 echoed,   0 hung
+  new client / new server:  192 echoed,   0 hung
+A server without a registry behaves as before except for refusing
+`egress:` tokens. An old server would treat such a dialer as an ordinary
+client session that never receives flows (harmless no-op).
+
+Tests
+-----
+cargo test --workspace: all green (netrunner-core 301 passed).
+cargo test -p netrunner-core --features "pcap mesh-quic" --lib: 350 passed.
+New in core: reverse egress carries client flows through the dialer
+(3 MiB end to end), Require fails closed, validate_egress denial, private
+targets refused / LAN opt-in, per-client exit policy (local / pinned to a
+label / refused), egress flow limit.
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ---
  core/src/net/auth.rs                      |  10 +
- core/src/net/connection/connection.rs     | 430 +++++++++++++++++++++-
+ core/src/net/connection/connection.rs     | 613 +++++++++++++++++++++-
  core/src/net/connection/dgram_engine.rs   |   4 +
- core/src/net/connection/handler.rs        | 126 ++++++-
- core/src/net/connection/mod.rs            |   2 +
- core/src/net/connection/reverse_egress.rs | 217 +++++++++++
+ core/src/net/connection/handler.rs        | 141 ++++-
+ core/src/net/connection/mod.rs            |   4 +
+ core/src/net/connection/muxer.rs          |  16 +-
+ core/src/net/connection/reverse_egress.rs | 316 +++++++++++
  core/src/net/mod.rs                       |   5 +-
- 7 files changed, 783 insertions(+), 11 deletions(-)
+ docs/REVERSE_EGRESS.md                    |  40 ++
+ tools/loadtest/src/bin/connect_burst.rs   | 145 +++++
+ 10 files changed, 1281 insertions(+), 13 deletions(-)
  create mode 100644 core/src/net/connection/reverse_egress.rs
+ create mode 100644 docs/REVERSE_EGRESS.md
+ create mode 100644 tools/loadtest/src/bin/connect_burst.rs
 
 diff --git a/core/src/net/auth.rs b/core/src/net/auth.rs
 index 5a03efc..11c6819 100644
@@ -48,7 +108,7 @@ index 5a03efc..11c6819 100644
      async fn report_usage(&self, user_id: &str, delta_bytes: u64) -> Result<UsageReport, AppError>;
      /// Отчитывается о нескольких пользователях одним идемпотентным пакетом.
 diff --git a/core/src/net/connection/connection.rs b/core/src/net/connection/connection.rs
-index 3a5851d..ac3c622 100644
+index 6a1306e..8fe2ed9 100644
 --- a/core/src/net/connection/connection.rs
 +++ b/core/src/net/connection/connection.rs
 @@ -105,6 +105,9 @@ pub(crate) struct MeshPeerSession {
@@ -84,7 +144,7 @@ index 3a5851d..ac3c622 100644
      pub(crate) fn is_usable(&self) -> bool {
          !self.muxer.is_fatal() && self.muxer.active_legs_count() > 0
      }
-@@ -293,6 +312,10 @@ impl MeshPeerSession {
+@@ -350,6 +369,10 @@ impl MeshPeerSession {
  
  impl Drop for MeshPeerSession {
      fn drop(&mut self) {
@@ -95,7 +155,7 @@ index 3a5851d..ac3c622 100644
          self.muxer.remove_all_streams();
          self.muxer.shutdown();
          self.engine_task.abort();
-@@ -1406,6 +1429,7 @@ impl ClientHandler {
+@@ -1463,6 +1486,7 @@ impl ClientHandler {
                  engine_task: engine_task.abort_handle(),
                  ready_payload,
                  last_used_ms: AtomicU64::new(mesh_process_uptime_ms()),
@@ -103,15 +163,15 @@ index 3a5851d..ac3c622 100644
                  #[cfg(feature = "mesh-quic")]
                  _quic_endpoint: quic_endpoint,
                  #[cfg(feature = "mesh-quic")]
-@@ -1607,6 +1631,7 @@ impl ClientHandler {
+@@ -1664,6 +1688,7 @@ impl ClientHandler {
          identity: &Option<Identity>,
          data_cipher_preference: DataCipherPreference,
          mesh_route_preference: crate::net::MeshRoutePreference,
-+        egress: &Option<Arc<crate::net::EgressPolicy>>,
++        egress: &Option<Arc<super::reverse_egress::EgressRuntime>>,
      ) -> Result<(), AppError> {
          let leg_name = format!("TCP-Leg-{}", leg_id);
  
-@@ -1673,7 +1698,9 @@ impl ClientHandler {
+@@ -1730,7 +1755,9 @@ impl ClientHandler {
          // ECDH), но UDP-нога, если уже поднята, живёт независимо от него.
          let claim_material =
              crate::crypto::DatagramKeyMaterial::derive_from_root(datagram_root, true);
@@ -122,7 +182,7 @@ index 3a5851d..ac3c622 100644
              let muxer = muxer.clone();
              // Тот же IP И тот же порт, на который уже легла TCP-нога — не
              // второй DNS-lookup, и естественно совпадает с тем, как настоящий
-@@ -1703,7 +1730,19 @@ impl ClientHandler {
+@@ -1760,7 +1787,19 @@ impl ClientHandler {
  
          muxer.add_leg(leg_id, control_tx, data_tx);
  
@@ -143,9 +203,9 @@ index 3a5851d..ac3c622 100644
          let engine = TunnelEngine {
              leg_id,
              inbound: Some(inbound),
-@@ -1834,6 +1873,78 @@ impl ClientHandler {
-     }
- 
+@@ -1895,6 +1934,81 @@ impl ClientHandler {
+     /// TCP-ног поднять; приводится к `1..=MAX_TUNNEL_LEGS`
+     /// ([`clamp_tunnel_legs`](crate::net::clamp_tunnel_legs)).
      pub async fn connect_with_privacy_and_preferences(
 +        remote_proxy_addr: &str,
 +        decoy_sni: impl Into<Arc<str>>,
@@ -156,6 +216,7 @@ index 3a5851d..ac3c622 100644
 +        strong_privacy: bool,
 +        data_cipher_preference: DataCipherPreference,
 +        mesh_route_preference: crate::net::MeshRoutePreference,
++        tunnel_legs: u32,
 +    ) -> Result<Arc<Muxer>, AppError> {
 +        Self::connect_inner(
 +            remote_proxy_addr,
@@ -167,6 +228,7 @@ index 3a5851d..ac3c622 100644
 +            strong_privacy,
 +            data_cipher_preference,
 +            mesh_route_preference,
++            tunnel_legs,
 +            None,
 +        )
 +        .await
@@ -204,7 +266,8 @@ index 3a5851d..ac3c622 100644
 +            false,
 +            DataCipherPreference::Auto,
 +            crate::net::MeshRoutePreference::ServerDefault,
-+            Some(Arc::new(policy)),
++            crate::net::DEFAULT_TUNNEL_LEGS,
++            Some(super::reverse_egress::EgressRuntime::new(policy)),
 +        )
 +        .await?;
 +        let weak = Arc::downgrade(&muxer);
@@ -222,15 +285,15 @@ index 3a5851d..ac3c622 100644
          remote_proxy_addr: &str,
          decoy_sni: impl Into<Arc<str>>,
          auth_token: Option<String>,
-@@ -1843,6 +1954,7 @@ impl ClientHandler {
-         strong_privacy: bool,
+@@ -1905,6 +2019,7 @@ impl ClientHandler {
          data_cipher_preference: DataCipherPreference,
          mesh_route_preference: crate::net::MeshRoutePreference,
-+        egress: Option<Arc<crate::net::EgressPolicy>>,
+         tunnel_legs: u32,
++        egress: Option<Arc<super::reverse_egress::EgressRuntime>>,
      ) -> Result<Arc<Muxer>, AppError> {
+         let tunnel_legs = crate::net::clamp_tunnel_legs(tunnel_legs);
          let decoy_sni: Arc<str> = decoy_sni.into();
-         let auth_token: Arc<str> = auth_token.unwrap_or_default().into();
-@@ -1899,6 +2011,7 @@ impl ClientHandler {
+@@ -1962,6 +2077,7 @@ impl ClientHandler {
              let decoy_sni = decoy_sni.clone();
              let auth_token = auth_token.clone();
              let identity = identity.clone();
@@ -238,7 +301,7 @@ index 3a5851d..ac3c622 100644
              let data_cipher_preference = data_cipher_preference;
              let mesh_route_preference = mesh_route_preference;
              tokio::spawn(async move {
-@@ -1929,6 +2042,7 @@ impl ClientHandler {
+@@ -1992,6 +2108,7 @@ impl ClientHandler {
                          &identity,
                          data_cipher_preference,
                          mesh_route_preference,
@@ -246,7 +309,7 @@ index 3a5851d..ac3c622 100644
                      )
                      .await
                      {
-@@ -2328,6 +2442,9 @@ pub struct ServerHandler {
+@@ -2391,6 +2508,9 @@ pub struct ServerHandler {
      /// игнорируется, поэтому открытого релея не возникает. Управляется
      /// [`crate::decoy::DecoyMode::honor_requested_sni`].
      pub(crate) honor_requested_sni: bool,
@@ -256,7 +319,7 @@ index 3a5851d..ac3c622 100644
      #[cfg(feature = "mesh-quic")]
      mesh_quic_connection: Option<quinn::Connection>,
  }
-@@ -2354,11 +2471,18 @@ impl ServerHandler {
+@@ -2417,11 +2537,18 @@ impl ServerHandler {
              identity,
              cover_flight,
              honor_requested_sni,
@@ -275,7 +338,7 @@ index 3a5851d..ac3c622 100644
      /// Installs node routing policy while preserving the legacy constructor
      /// used by embedders.
      pub fn with_mesh_policy(
-@@ -2786,6 +2910,15 @@ impl TunnelHandler for ServerHandler {
+@@ -2849,6 +2976,15 @@ impl TunnelHandler for ServerHandler {
              || auth_token.starts_with("mesh2:")
              || auth_token.starts_with("mesh3:")
              || auth_token.starts_with("mesh4:");
@@ -291,7 +354,7 @@ index 3a5851d..ac3c622 100644
          #[cfg(feature = "mesh-quic")]
          if mesh_quic_connection.is_some() && !is_mesh_peer {
              metrics::counter!("netrunner_mesh_quic_non_mesh_rejected_total").increment(1);
-@@ -2804,7 +2937,33 @@ impl TunnelHandler for ServerHandler {
+@@ -2867,7 +3003,33 @@ impl TunnelHandler for ServerHandler {
          #[cfg(not(feature = "mesh-quic"))]
          self.session_manager
              .register_datagram_session(&muxer, leg_id, datagram_root);
@@ -326,7 +389,7 @@ index 3a5851d..ac3c622 100644
              match &parsed_mesh_auth {
                  Err(reason) => Err(AppError::new(
                      ERR_AUTH_FAILED,
-@@ -2953,8 +3112,28 @@ impl TunnelHandler for ServerHandler {
+@@ -3016,8 +3178,28 @@ impl TunnelHandler for ServerHandler {
              mesh_route,
              mesh_peer: is_mesh_peer,
              mesh_onion_peer,
@@ -356,7 +419,7 @@ index 3a5851d..ac3c622 100644
  
          #[cfg(feature = "mesh-quic")]
          if is_mesh_peer {
-@@ -3007,9 +3186,13 @@ impl TunnelHandler for ServerHandler {
+@@ -3070,9 +3252,13 @@ impl TunnelHandler for ServerHandler {
              let sm = self.session_manager.clone();
              let sid = log_session_id;
              let m = muxer.clone();
@@ -370,7 +433,7 @@ index 3a5851d..ac3c622 100644
                      sm.remove(&sid);
                  }
              });
-@@ -3442,6 +3625,12 @@ mod tests {
+@@ -3506,6 +3692,12 @@ mod tests {
  
      #[async_trait::async_trait]
      impl crate::net::AuthValidator for CountingValidator {
@@ -383,7 +446,16 @@ index 3a5851d..ac3c622 100644
          async fn validate(&self, _token: &str) -> Result<crate::net::UserQuota, AppError> {
              self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
              if self.reject {
-@@ -4008,4 +4197,237 @@ mod tests {
+@@ -3516,7 +3708,7 @@ mod tests {
+                 ));
+             }
+             Ok(crate::net::UserQuota {
+-                user_id: "user".into(),
++                user_id: _token.into(),
+                 limit_bytes: None,
+                 used_bytes: 0,
+             })
+@@ -4119,4 +4311,415 @@ mod tests {
          tune_tcp_congestion(&client);
          client.set_nodelay(true).unwrap();
      }
@@ -480,6 +552,8 @@ index 3a5851d..ac3c622 100644
 +            None,
 +            EgressPolicy {
 +                allow_private: true,
++
++                ..Default::default()
 +            },
 +        )
 +        .await
@@ -576,6 +650,8 @@ index 3a5851d..ac3c622 100644
 +            None,
 +            EgressPolicy {
 +                allow_private: true,
++
++                ..Default::default()
 +            },
 +        )
 +        .await
@@ -620,12 +696,186 @@ index 3a5851d..ac3c622 100644
 +        assert!(egress.is_fatal(), "the ingress must reject the token");
 +        assert!(registry.live().is_empty());
 +    }
++
++    // ---------- reverse egress: per-client exit and flow limit ----------
++
++    struct TestPolicy(Vec<(&'static str, crate::net::ExitChoice)>);
++
++    impl crate::net::ExitPolicy for TestPolicy {
++        fn choice_for(&self, user_id: Option<&str>) -> crate::net::ExitChoice {
++            self.0
++                .iter()
++                .find(|(user, _)| Some(*user) == user_id)
++                .map_or(crate::net::ExitChoice::Default, |(_, c)| c.clone())
++        }
++    }
++
++    async fn connect_client_raw_as(
++        addr: std::net::SocketAddr,
++        token: &str,
++    ) -> (
++        Arc<Muxer>,
++        mpsc::Sender<RawCastFrame>,
++        mpsc::Receiver<RawCastFrame>,
++    ) {
++        let (tx_to_engine, rx_from_tunnel) = mpsc::channel(256);
++        let (tx_to_tunnel, rx_from_engine) = mpsc::channel(256);
++        let muxer = ClientHandler::connect(
++            &addr.to_string(),
++            "example.com",
++            Some(token.into()),
++            None,
++            rx_from_engine,
++            tx_to_engine,
++        )
++        .await
++        .unwrap();
++        (muxer, tx_to_tunnel, rx_from_tunnel)
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++    async fn exit_policy_sends_a_client_local_while_others_are_refused() {
++        use crate::net::{ExitChoice, ExitMode, ReverseEgressRegistry};
++        let registry = ReverseEgressRegistry::new(ExitMode::Require);
++        registry.set_policy(Some(Arc::new(TestPolicy(vec![(
++            "local-user",
++            ExitChoice::Local,
++        )]))));
++        let addr = spawn_ingress_with_registry(registry).await;
++        let target = spawn_burst_target(4096, 1024).await;
++
++        let (a, to_a, mut from_a) = connect_client_raw_as(addr, "local-user").await;
++        wait_for_legs(&a).await;
++        let (got, _) = fetch_via_client(&to_a, &mut from_a, target).await;
++        assert_eq!(got, 4096, "a Local client exits from the ingress even in Require mode");
++
++        let (b, to_b, mut from_b) = connect_client_raw_as(addr, "someone-else").await;
++        wait_for_legs(&b).await;
++        let (got, closed) = fetch_via_client(&to_b, &mut from_b, target).await;
++        assert_eq!(got, 0, "everybody else still fails closed without an egress");
++        assert!(closed);
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++    async fn exit_policy_can_pin_a_client_to_a_labeled_egress() {
++        use crate::net::{EgressPolicy, ExitChoice, ExitMode, ReverseEgressRegistry};
++        let registry = ReverseEgressRegistry::new(ExitMode::Local);
++        registry.set_policy(Some(Arc::new(TestPolicy(vec![
++            ("pinned", ExitChoice::Egress("home".into())),
++            ("ghost", ExitChoice::Egress("nowhere".into())),
++        ]))));
++        let addr = spawn_ingress_with_registry(registry.clone()).await;
++        let target = spawn_burst_target(4096, 1024).await;
++        let egress = ClientHandler::connect_egress(
++            &addr.to_string(),
++            "example.com",
++            Some("egress-token".into()),
++            "home",
++            None,
++            EgressPolicy {
++                allow_private: true,
++                ..Default::default()
++            },
++        )
++        .await
++        .unwrap();
++        wait_for_legs(&egress).await;
++        for _ in 0..100 {
++            if !registry.live().is_empty() {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++
++        let (p, to_p, mut from_p) = connect_client_raw_as(addr, "pinned").await;
++        wait_for_legs(&p).await;
++        let (got, _) = fetch_via_client(&to_p, &mut from_p, target).await;
++        assert_eq!(got, 4096, "a client pinned to a live label exits through it");
++
++        let (g, to_g, mut from_g) = connect_client_raw_as(addr, "ghost").await;
++        wait_for_legs(&g).await;
++        let (got, closed) = fetch_via_client(&to_g, &mut from_g, target).await;
++        assert_eq!(got, 0, "a client pinned to a missing label is refused, not sent elsewhere");
++        assert!(closed);
++
++        // A client without a pin follows the mode (Local here) and exits from the ingress.
++        let (d, to_d, mut from_d) = connect_client_raw_as(addr, "default-user").await;
++        wait_for_legs(&d).await;
++        let (got, _) = fetch_via_client(&to_d, &mut from_d, target).await;
++        assert_eq!(got, 4096);
++    }
++
++    /// A target that accepts connections and keeps them open without sending anything.
++    async fn spawn_hold_target() -> std::net::SocketAddr {
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let addr = listener.local_addr().unwrap();
++        tokio::spawn(async move {
++            let mut held = Vec::new();
++            while let Ok((sock, _)) = listener.accept().await {
++                held.push(sock);
++            }
++        });
++        addr
++    }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++    async fn egress_flow_limit_refuses_the_extra_flow_and_keeps_the_first() {
++        use crate::net::{EgressPolicy, ExitMode, ReverseEgressRegistry};
++        let registry = ReverseEgressRegistry::new(ExitMode::Require);
++        let addr = spawn_ingress_with_registry(registry.clone()).await;
++        let target = spawn_hold_target().await;
++        let egress = ClientHandler::connect_egress(
++            &addr.to_string(),
++            "example.com",
++            Some("jwt".into()),
++            "home",
++            None,
++            EgressPolicy {
++                allow_private: true,
++                max_streams: Some(1),
++            },
++        )
++        .await
++        .unwrap();
++        wait_for_legs(&egress).await;
++        for _ in 0..100 {
++            if !registry.live().is_empty() {
++                break;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        let (client, to_tunnel, mut from_tunnel) = connect_client_raw(addr).await;
++        wait_for_legs(&client).await;
++
++        for id in 1..=2u64 {
++            let mut connect = RawCastFrame::connect(
++                LocalProtocol::Tcp,
++                id,
++                std::net::Ipv4Addr::LOCALHOST,
++                target.port(),
++            );
++            connect.payload = Bytes::from(target.to_string());
++            to_tunnel.send(connect).await.unwrap();
++        }
++        let mut closed = std::collections::HashSet::new();
++        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
++        while let Ok(Some(frame)) = tokio::time::timeout_at(deadline, from_tunnel.recv()).await {
++            if matches!(frame.event, crate::rawcast::RawCastEvent::Close) {
++                closed.insert(frame.socket_id);
++            }
++        }
++        assert_eq!(
++            closed.len(),
++            1,
++            "exactly one of the two flows must be refused by the limit, closed: {closed:?}"
++        );
++    }
  }
 diff --git a/core/src/net/connection/dgram_engine.rs b/core/src/net/connection/dgram_engine.rs
-index 3c0e0a0..1a62b67 100644
+index 3ad37b1..e985979 100644
 --- a/core/src/net/connection/dgram_engine.rs
 +++ b/core/src/net/connection/dgram_engine.rs
-@@ -1005,6 +1005,8 @@ async fn process_datagram(
+@@ -1015,6 +1015,8 @@ async fn process_datagram(
              mesh_route: None,
              mesh_peer: false,
              mesh_onion_peer: false,
@@ -634,7 +884,7 @@ index 3c0e0a0..1a62b67 100644
          });
          let handler = Arc::new(StreamHandler::new(entry.muxer.clone(), Some(opener)));
  
-@@ -1550,6 +1552,8 @@ mod tests {
+@@ -1560,6 +1562,8 @@ mod tests {
              mesh_route: None,
              mesh_peer: false,
              mesh_onion_peer: false,
@@ -644,7 +894,7 @@ index 3c0e0a0..1a62b67 100644
          let handler = StreamHandler::new(muxer.clone(), Some(opener));
  
 diff --git a/core/src/net/connection/handler.rs b/core/src/net/connection/handler.rs
-index b902f6e..05236aa 100644
+index 4c40d16..b68a0c5 100644
 --- a/core/src/net/connection/handler.rs
 +++ b/core/src/net/connection/handler.rs
 @@ -50,6 +50,10 @@ pub struct RemoteOpener {
@@ -654,7 +904,7 @@ index b902f6e..05236aa 100644
 +    /// Ingress side: reverse-egress sessions that may carry this client's flows.
 +    pub reverse_egress: Option<Arc<super::ReverseEgressRegistry>>,
 +    /// Egress side of a reverse-egress session: what targets may be dialed.
-+    pub egress_policy: Option<Arc<super::EgressPolicy>>,
++    pub(crate) egress_policy: Option<Arc<super::reverse_egress::EgressRuntime>>,
  }
  
  impl RemoteOpener {
@@ -663,10 +913,10 @@ index b902f6e..05236aa 100644
              return;
          }
 +        if let Some(registry) = self.reverse_egress.as_ref() {
-+            use super::ExitMode;
-+            match (registry.mode(), registry.pick()) {
-+                (ExitMode::Local, _) | (ExitMode::Prefer, None) => {}
-+                (_, Some(session)) => {
++            use super::reverse_egress::Pick;
++            match registry.pick_for(self.muxer.quota_user_id().as_deref()) {
++                Pick::Local => {}
++                Pick::Via(session) => {
 +                    tokio::spawn(Self::open_via_reverse_egress(
 +                        self.muxer.clone(),
 +                        session,
@@ -677,8 +927,8 @@ index b902f6e..05236aa 100644
 +                    ));
 +                    return;
 +                }
-+                // Require without a live egress: fail closed, never exit from here.
-+                (ExitMode::Require, None) => {
++                // A remote exit is required but unavailable: fail closed, never exit from here.
++                Pick::Refuse => {
 +                    self.reject_stream(stream_id, token).await;
 +                    return;
 +                }
@@ -687,7 +937,7 @@ index b902f6e..05236aa 100644
          if !self.mesh_peer && self.mesh_route.is_none() {
              if let Some(mesh) = self.mesh.clone() {
                  if mesh.is_direct_output() {
-@@ -116,6 +142,24 @@ impl RemoteOpener {
+@@ -116,6 +142,23 @@ impl RemoteOpener {
          token: CancellationToken,
          strong_privacy: bool,
      ) {
@@ -698,12 +948,11 @@ index b902f6e..05236aa 100644
 +            return;
 +        }
 +        if let Some(registry) = self.reverse_egress.as_ref() {
-+            use super::ExitMode;
-+            let remote_exit = match registry.mode() {
-+                ExitMode::Local => false,
-+                ExitMode::Prefer => registry.pick().is_some(),
-+                ExitMode::Require => true,
-+            };
++            use super::reverse_egress::Pick;
++            let remote_exit = !matches!(
++                registry.pick_for(self.muxer.quota_user_id().as_deref()),
++                Pick::Local
++            );
 +            if remote_exit {
 +                self.reject_stream(stream_id, token).await;
 +                return;
@@ -712,7 +961,7 @@ index b902f6e..05236aa 100644
          if !self.mesh_peer
              && self
                  .mesh_route
-@@ -310,6 +354,7 @@ impl RemoteOpener {
+@@ -310,6 +353,7 @@ impl RemoteOpener {
          let mesh_peer = self.mesh_peer;
          let self_mesh_onion_peer = self.mesh_onion_peer;
          let mesh2_peer = mesh_route.is_some();
@@ -720,21 +969,44 @@ index b902f6e..05236aa 100644
          tokio::spawn(async move {
              if let (Some(mesh), Some(route)) = (mesh, mesh_route) {
                  Self::open_via_mesh(
-@@ -330,7 +375,12 @@ impl RemoteOpener {
+@@ -319,6 +363,22 @@ impl RemoteOpener {
+                 return;
+             }
+ 
++            // Reverse-egress dialer: honour the flow limit (the slot is held until the flow ends).
++            let _slot = match &egress_policy {
++                Some(runtime) => match runtime.try_acquire() {
++                    Some(slot) => Some(slot),
++                    None => {
++                        warn!(stream_id, "⚠️ [Egress] flow limit reached, refusing");
++                        let _ = muxer
++                            .send_control(stream_id, FrameType::Close, Bytes::new())
++                            .await;
++                        muxer.remove_stream(stream_id);
++                        return;
++                    }
++                },
++                None => None,
++            };
++
+             // Приватность: НЕ логируем `target` (хост, к которому идёт пользователь)
+             // — это ровно та информация о его активности, которую прокси не должен
+             // хранить нигде. `stream_id` достаточно для локальной корреляции.
+@@ -330,7 +390,12 @@ impl RemoteOpener {
                      debug!(stream_id, "🔪 Target connection cancelled by Eviction");
                      return;
                  }
 -                connect_res = tokio::time::timeout(Duration::from_secs(7), TcpStream::connect(&target)) => {
 +                connect_res = tokio::time::timeout(Duration::from_secs(7), async {
 +                    match &egress_policy {
-+                        Some(policy) => policy.connect(&target).await,
++                        Some(runtime) => runtime.policy.connect(&target).await,
 +                        None => TcpStream::connect(&target).await,
 +                    }
 +                }) => {
                      match connect_res {
                          Ok(Ok(stream)) => {
                              if mesh_peer {
-@@ -718,7 +768,7 @@ impl RemoteOpener {
+@@ -718,7 +783,7 @@ impl RemoteOpener {
          route: MeshRoute,
          ingress_stream_id: u32,
          target: String,
@@ -743,7 +1015,7 @@ index b902f6e..05236aa 100644
          token: CancellationToken,
          is_udp: bool,
          upstream_peer: bool,
-@@ -788,7 +838,7 @@ impl RemoteOpener {
+@@ -788,7 +853,7 @@ impl RemoteOpener {
              route = retry_route;
          }
  
@@ -752,7 +1024,7 @@ index b902f6e..05236aa 100644
              if !token.is_cancelled() {
                  let _ = ingress_muxer
                      .send_control(ingress_stream_id, FrameType::Close, Bytes::new())
-@@ -797,6 +847,74 @@ impl RemoteOpener {
+@@ -797,6 +862,74 @@ impl RemoteOpener {
              ingress_muxer.remove_stream(ingress_stream_id);
              return;
          };
@@ -827,7 +1099,7 @@ index b902f6e..05236aa 100644
          let peer_muxer = peer_session.muxer.clone();
          if token.is_cancelled() {
              let _ = peer_muxer
-@@ -806,8 +924,6 @@ impl RemoteOpener {
+@@ -806,8 +939,6 @@ impl RemoteOpener {
              ingress_muxer.remove_stream(ingress_stream_id);
              return;
          }
@@ -837,10 +1109,10 @@ index b902f6e..05236aa 100644
              metrics::histogram!("netrunner_mesh_peer_rtt_ms").record(f64::from(rtt_ms));
          }
 diff --git a/core/src/net/connection/mod.rs b/core/src/net/connection/mod.rs
-index 2fa90ac..3446e44 100644
+index 2fa90ac..4265678 100644
 --- a/core/src/net/connection/mod.rs
 +++ b/core/src/net/connection/mod.rs
-@@ -21,9 +21,11 @@ mod dgram_engine;
+@@ -21,9 +21,13 @@ mod dgram_engine;
  mod engine;
  mod handler;
  mod muxer;
@@ -851,13 +1123,44 @@ index 2fa90ac..3446e44 100644
  pub use connection::{ClientHandler, Connection, ServerHandler, SessionManager, TunnelHandler};
  pub use dgram_engine::run_datagram_listener;
  pub use muxer::{Muxer, GLOBAL_MIN_RTT};
-+pub use reverse_egress::{EgressPolicy, ExitMode, ReverseEgressRegistry, EGRESS_TOKEN_PREFIX};
++pub use reverse_egress::{
++    EgressPolicy, ExitChoice, ExitMode, ExitPolicy, ReverseEgressRegistry, EGRESS_TOKEN_PREFIX,
++};
+diff --git a/core/src/net/connection/muxer.rs b/core/src/net/connection/muxer.rs
+index b39ab17..53b5175 100644
+--- a/core/src/net/connection/muxer.rs
++++ b/core/src/net/connection/muxer.rs
+@@ -1349,9 +1349,23 @@ impl Muxer {
+             // Heartbeat (PONG): dropping it via try_send causes the health-check
+             // probe to time out after HEALTH_CHECK_TIMEOUT and evict a live leg.
+             // Credit too: a dropped grant would leave the sender blocked until the next one.
++            // Connect too (all variants): a dropped Connect is never retried and carries no
++            // ack, so the local socket would hang forever — which a browser opening dozens
++            // of connections at once hit constantly (the 16-slot control queue of a leg
++            // overflowed and the surplus Connects vanished with only a rate-limited WARN).
++            // The caller of a Connect is a per-stream task, so awaiting here stalls only
++            // that one stream, never the shared loop.
+             let is_critical = matches!(
+                 message.frame_type,
+-                FrameType::Close | FrameType::Heartbeat | FrameType::Credit
++                FrameType::Close
++                    | FrameType::Heartbeat
++                    | FrameType::Credit
++                    | FrameType::Connect
++                    | FrameType::UdpConnect
++                    | FrameType::SecureConnect
++                    | FrameType::SecureUdpConnect
++                    | FrameType::MeshOnionConnect
++                    | FrameType::MeshOnionUdpConnect
+             );
+ 
+             if is_critical {
 diff --git a/core/src/net/connection/reverse_egress.rs b/core/src/net/connection/reverse_egress.rs
 new file mode 100644
-index 0000000..e98de0f
+index 0000000..dda3ab5
 --- /dev/null
 +++ b/core/src/net/connection/reverse_egress.rs
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,316 @@
 +//! Reverse egress: a node behind NAT dials OUT to an ingress and then serves as the exit
 +//! for the flows of that ingress's own clients. The data-plane role follows
 +//! `StreamHandler::opener`, not who dialed: the dialer's handler has a `RemoteOpener`
@@ -873,6 +1176,7 @@ index 0000000..e98de0f
 +
 +use std::io;
 +use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
++use std::sync::atomic::{AtomicUsize, Ordering};
 +use std::sync::{Arc, Mutex};
 +
 +use tokio::net::TcpStream;
@@ -887,6 +1191,42 @@ index 0000000..e98de0f
 +pub struct EgressPolicy {
 +    /// Allow loopback/private/link-local targets (the egress's own LAN). Off by default.
 +    pub allow_private: bool,
++    /// Maximum number of flows this egress serves at the same time; further flows are refused. `None` means unlimited.
++    pub max_streams: Option<usize>,
++}
++
++/// An [`EgressPolicy`] plus the live flow counter shared by all legs of one egress session.
++pub(crate) struct EgressRuntime {
++    pub(crate) policy: EgressPolicy,
++    active: AtomicUsize,
++}
++
++/// One flow slot; released on drop.
++pub(crate) struct StreamSlot(Arc<EgressRuntime>);
++
++impl Drop for StreamSlot {
++    fn drop(&mut self) {
++        self.0.active.fetch_sub(1, Ordering::SeqCst);
++    }
++}
++
++impl EgressRuntime {
++    pub(crate) fn new(policy: EgressPolicy) -> Arc<Self> {
++        Arc::new(Self {
++            policy,
++            active: AtomicUsize::new(0),
++        })
++    }
++
++    /// `None` when the flow limit is reached.
++    pub(crate) fn try_acquire(self: &Arc<Self>) -> Option<StreamSlot> {
++        let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
++        if self.policy.max_streams.is_some_and(|max| now > max) {
++            self.active.fetch_sub(1, Ordering::SeqCst);
++            return None;
++        }
++        Some(StreamSlot(self.clone()))
++    }
 +}
 +
 +impl EgressPolicy {
@@ -940,6 +1280,30 @@ index 0000000..e98de0f
 +        || (first & 0xffc0) == 0xfe80 // link-local
 +}
 +
++/// Per-client routing decision of an [`ExitPolicy`].
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum ExitChoice {
++    /// Follow the registry's [`ExitMode`].
++    Default,
++    /// This client always exits from the ingress itself.
++    Local,
++    /// This client exits only through the egress with this label; without it the flow is refused.
++    Egress(String),
++}
++
++/// Maps a client (the validator's `user_id`) to its exit; implemented by the node, e.g. from its device registry.
++pub trait ExitPolicy: Send + Sync {
++    fn choice_for(&self, user_id: Option<&str>) -> ExitChoice;
++}
++
++/// Where one flow goes.
++pub(crate) enum Pick {
++    Local,
++    Via(Arc<MeshPeerSession>),
++    /// A remote exit is required but unavailable: refuse, never fall back to the ingress.
++    Refuse,
++}
++
 +/// Where flows of the ingress's own clients exit.
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +pub enum ExitMode {
@@ -960,6 +1324,7 @@ index 0000000..e98de0f
 +struct Inner {
 +    mode: ExitMode,
 +    sessions: Vec<Entry>,
++    policy: Option<Arc<dyn ExitPolicy>>,
 +}
 +
 +/// Live reverse-egress sessions of one ingress.
@@ -973,6 +1338,7 @@ index 0000000..e98de0f
 +            inner: Mutex::new(Inner {
 +                mode,
 +                sessions: Vec::new(),
++                policy: None,
 +            }),
 +        })
 +    }
@@ -983,6 +1349,40 @@ index 0000000..e98de0f
 +
 +    pub fn set_mode(&self, mode: ExitMode) {
 +        self.inner.lock().unwrap().mode = mode;
++    }
++
++    /// Per-client exit policy, consulted for every new flow. `None`: everybody follows the mode.
++    pub fn set_policy(&self, policy: Option<Arc<dyn ExitPolicy>>) {
++        self.inner.lock().unwrap().policy = policy;
++    }
++
++    /// Decides where a flow of `user_id` goes.
++    pub(crate) fn pick_for(&self, user_id: Option<&str>) -> Pick {
++        let (mode, policy) = {
++            let inner = self.inner.lock().unwrap();
++            (inner.mode, inner.policy.clone())
++        };
++        match policy.map_or(ExitChoice::Default, |p| p.choice_for(user_id)) {
++            ExitChoice::Local => Pick::Local,
++            ExitChoice::Egress(label) => self.pick_labeled(&label).map_or(Pick::Refuse, Pick::Via),
++            ExitChoice::Default => match (mode, self.pick()) {
++                (ExitMode::Local, _) | (ExitMode::Prefer, None) => Pick::Local,
++                (_, Some(session)) => Pick::Via(session),
++                (ExitMode::Require, None) => Pick::Refuse,
++            },
++        }
++    }
++
++    /// The most recent usable session with this label.
++    fn pick_labeled(&self, label: &str) -> Option<Arc<MeshPeerSession>> {
++        self.inner
++            .lock()
++            .unwrap()
++            .sessions
++            .iter()
++            .rev()
++            .find(|e| e.label == label && e.session.is_usable())
++            .map(|e| e.session.clone())
 +    }
 +
 +    /// Labels of the sessions that can carry flows right now.
@@ -1068,6 +1468,8 @@ index 0000000..e98de0f
 +    fn lan_opt_in_allows_private_but_not_unspecified_or_multicast() {
 +        let policy = EgressPolicy {
 +            allow_private: true,
++
++            ..Default::default()
 +        };
 +        assert!(policy.address_allowed(ip("192.168.1.1")));
 +        assert!(policy.address_allowed(ip("127.0.0.1")));
@@ -1076,21 +1478,218 @@ index 0000000..e98de0f
 +    }
 +}
 diff --git a/core/src/net/mod.rs b/core/src/net/mod.rs
-index 324aa29..6f9a2a6 100644
+index 32cd0ec..3459ff4 100644
 --- a/core/src/net/mod.rs
 +++ b/core/src/net/mod.rs
-@@ -67,8 +67,9 @@ pub use credit::{
+@@ -68,8 +68,9 @@ pub use credit::{
  };
  #[cfg(not(target_arch = "wasm32"))]
  pub use connection::{
 -    run_datagram_listener, ClientHandler, Connection, Muxer, ServerHandler, SessionManager,
 -    TunnelHandler, BUF_CAP, GLOBAL_MIN_RTT,
-+    run_datagram_listener, ClientHandler, Connection, EgressPolicy, ExitMode, Muxer,
-+    ReverseEgressRegistry, ServerHandler, SessionManager, TunnelHandler, BUF_CAP,
++    run_datagram_listener, ClientHandler, Connection, EgressPolicy, ExitChoice, ExitMode, ExitPolicy,
++    Muxer, ReverseEgressRegistry, ServerHandler, SessionManager, TunnelHandler, BUF_CAP,
 +    EGRESS_TOKEN_PREFIX, GLOBAL_MIN_RTT,
  };
  pub use constants::*;
  #[cfg(not(target_arch = "wasm32"))]
+diff --git a/docs/REVERSE_EGRESS.md b/docs/REVERSE_EGRESS.md
+new file mode 100644
+index 0000000..2777594
+--- /dev/null
++++ b/docs/REVERSE_EGRESS.md
+@@ -0,0 +1,40 @@
++# Reverse egress: домашний узел как выход
++
++Узел за NAT (домашний компьютер, роутер) **сам подключается к ingress** и становится выходом для потоков клиентов
++этого ingress. Трафик клиента выходит в интернет с домашнего адреса, хотя входящих соединений на дом никто не открывает.
++
++> Описано по коду `core/src/net/connection/{reverse_egress,handler,connection}.rs` и тестам
++> (`cargo test -p netrunner-core --lib reverse_egress`, а также `connection::tests`: `reverse_egress_carries…`, `require_mode…`, `exit_policy…`, `egress_flow_limit…`).
++> Не проверено на двух реальных хостах — только loopback.
++
++## Как устроено
++
++* **Кто кого набирает, не определяет, кто открывает цели.** Роль данных задаётся `StreamHandler::opener`: у набравшего
++  (`ClientHandler::connect_egress`) он есть — он открывает цели; у принявшего (ingress) его для такой сессии нет, и ingress
++  открывает потоки *к набравшему* через `MeshPeerSession` — тем же способом, что и mesh-хопы (`bridge_via_peer`).
++* **Токен набравшего:** `egress:<метка>:<обычный клиентский токен>`. Метка информационная (имя выхода в реестре).
++* **Ingress включает роль явно:** `ServerHandler::with_reverse_egress(Arc<ReverseEgressRegistry>)`. Без реестра ingress
++  такую роль не предлагает вообще — токен `egress:…` отклоняется (раньше он считался обычным токеном).
++* **Права:** `AuthValidator::validate_egress` (по умолчанию — отказ). Обычный клиентский токен выход не даёт: иначе любой
++  клиент мог бы объявить себя выходом и получать чужой трафик. Без `require_auth` роль не выдаётся.
++* **Куда идут потоки клиентов:** `ExitMode` реестра — `Local` (как раньше, по умолчанию), `Prefer` (через выход, нет —
++  локально), `Require` (только через выход; нет выхода — поток закрывается, **никогда** не выходит с ingress).
++  `ExitPolicy::choice_for(user_id)` решает по клиенту: `Default` (по режиму), `Local`, `Egress(метка)` (только через этот
++  выход; метки нет — отказ, без отката на ingress).
++* **Безопасность выхода:** `EgressPolicy` на стороне набравшего. По умолчанию цели loopback/private/link-local/CGNAT/metadata
++  отклоняются, адрес проверяется ровно тот, к которому идёт соединение (повторного резолва нет — подмена DNS не работает);
++  `allow_private` включает LAN дома. `max_streams` ограничивает число одновременных потоков (лишние получают `Close`).
++* **Только TCP.** UDP-потоки клиентов при удалённом выходе закрываются (не уходят локально втихую); у набравшего нет
++  datagram-ноги.
++
++## Что меняется для обычных клиентов и серверов
++
++Ничего на проводе: новых кадров нет, формат хендшейка тот же. Сервер без реестра ведёт себя как раньше, кроме отказа на
++`egress:`-токены. Старый клиент работает с новым сервером и наоборот (проверено, см. коммит).
++
++## Доставка Connect (сопутствующее исправление)
++
++Раньше `Connect` (и его варианты) шёл по управляющей очереди ноги через `try_send`: при переполнении очереди (16 слотов)
++кадр молча пропадал — без повтора и без подтверждения, локальный сокет зависал навсегда. Браузер, открывающий десятки
++соединений сразу, натыкался на это постоянно. Теперь Connect — критичный кадр (как `Close`/`Heartbeat`/`Credit`): отправка
++`send().await`, блокируется только задача этого потока.
+diff --git a/tools/loadtest/src/bin/connect_burst.rs b/tools/loadtest/src/bin/connect_burst.rs
+new file mode 100644
+index 0000000..a5db0b8
+--- /dev/null
++++ b/tools/loadtest/src/bin/connect_burst.rs
+@@ -0,0 +1,145 @@
++//! Проверка «пачка одновременных Connect на одной сессии» (так открывает соединения браузер).
++//!
++//! Поднимает реальный `netrunner-server` отдельным процессом и локальный echo-таргет, один клиент (`ClientHandler::connect`)
++//! открывает `--streams` потоков сразу, в каждый шлёт короткое сообщение и ждёт эхо. Печатает одну JSON-строку:
++//! сколько потоков получили эхо (`echoed`) и сколько повисли (`hung`: Connect потерян, байта не пришло).
++//!
++//! Использует только публичный API клиента, поэтому собирается и со старым ядром — для сравнения «до/после» правки
++//! доставки Connect-кадров (muxer: Connect — критичный кадр, идёт через `send().await`, а не `try_send`).
++
++use clap::Parser;
++use netrunner_core::net::{ClientHandler, NetworkConfig};
++use netrunner_core::rawcast::{LocalProtocol, RawCastEvent, RawCastFrame};
++use std::collections::HashSet;
++use std::process::{Command, Stdio};
++use std::time::{Duration, Instant};
++use tokio::io::{AsyncReadExt, AsyncWriteExt};
++use tokio::sync::mpsc;
++
++#[derive(Parser, Debug)]
++struct Args {
++    /// Бинарник `netrunner-server`.
++    #[arg(long)]
++    server_bin: String,
++    /// Сколько потоков открыть одновременно.
++    #[arg(long, default_value_t = 64)]
++    streams: u64,
++    /// Сколько раундов (каждый — новая сессия клиента).
++    #[arg(long, default_value_t = 3)]
++    rounds: u32,
++    /// Сколько секунд ждать эхо после отправки.
++    #[arg(long, default_value_t = 15)]
++    wait_secs: u64,
++}
++
++fn free_port() -> u16 {
++    std::net::TcpListener::bind("127.0.0.1:0")
++        .unwrap()
++        .local_addr()
++        .unwrap()
++        .port()
++}
++
++async fn echo_server() -> std::net::SocketAddr {
++    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let addr = listener.local_addr().unwrap();
++    tokio::spawn(async move {
++        loop {
++            let Ok((mut sock, _)) = listener.accept().await else {
++                continue;
++            };
++            tokio::spawn(async move {
++                let mut buf = vec![0u8; 4096];
++                while let Ok(n) = sock.read(&mut buf).await {
++                    if n == 0 || sock.write_all(&buf[..n]).await.is_err() {
++                        break;
++                    }
++                }
++            });
++        }
++    });
++    addr
++}
++
++#[tokio::main]
++async fn main() {
++    let args = Args::parse();
++    NetworkConfig::init_global(1450);
++    let echo = echo_server().await;
++    let std::net::IpAddr::V4(ip) = echo.ip() else {
++        unreachable!()
++    };
++
++    let port = free_port();
++    let mut server = Command::new(&args.server_bin)
++        .args([
++            "--host",
++            "127.0.0.1",
++            "--port",
++            &port.to_string(),
++            "--decoy-host",
++            "example.com",
++        ])
++        .stdout(Stdio::null())
++        .stderr(Stdio::null())
++        .spawn()
++        .expect("не удалось запустить сервер");
++    let addr = format!("127.0.0.1:{port}");
++    for _ in 0..100 {
++        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
++            break;
++        }
++        tokio::time::sleep(Duration::from_millis(100)).await;
++    }
++
++    let (mut echoed_total, mut hung_total) = (0u64, 0u64);
++    for _ in 0..args.rounds {
++        let (to_tunnel, rx_from_engine) = mpsc::channel::<RawCastFrame>(1024);
++        let (tx_to_engine, mut from_tunnel) = mpsc::channel::<RawCastFrame>(1024);
++        let muxer = ClientHandler::connect(&addr, "example.com", None, None, rx_from_engine, tx_to_engine)
++            .await
++            .expect("connect");
++        let deadline = Instant::now() + Duration::from_secs(10);
++        while muxer.active_legs_count() == 0 && Instant::now() < deadline {
++            tokio::time::sleep(Duration::from_millis(10)).await;
++        }
++        assert!(muxer.active_legs_count() > 0, "ни одна нога не поднялась");
++
++        // Все Connect — одной пачкой, без пауз.
++        for id in 1..=args.streams {
++            let mut connect = RawCastFrame::connect(LocalProtocol::Tcp, id, ip, echo.port());
++            connect.payload = bytes::Bytes::from(echo.to_string());
++            to_tunnel.send(connect).await.unwrap();
++            to_tunnel
++                .send(RawCastFrame::data(
++                    LocalProtocol::Tcp,
++                    id,
++                    ip,
++                    echo.port(),
++                    bytes::Bytes::from_static(b"ping"),
++                ))
++                .await
++                .unwrap();
++        }
++        let mut seen: HashSet<u64> = HashSet::new();
++        let end = tokio::time::Instant::now() + Duration::from_secs(args.wait_secs);
++        while (seen.len() as u64) < args.streams {
++            match tokio::time::timeout_at(end, from_tunnel.recv()).await {
++                Ok(Some(frame)) if frame.event == RawCastEvent::Data => {
++                    seen.insert(frame.socket_id);
++                }
++                Ok(Some(_)) => {}
++                _ => break,
++            }
++        }
++        echoed_total += seen.len() as u64;
++        hung_total += args.streams - seen.len() as u64;
++        drop(to_tunnel);
++        drop(muxer);
++    }
++    let _ = server.kill();
++    println!(
++        "{{\"streams\":{},\"rounds\":{},\"echoed\":{},\"hung\":{}}}",
++        args.streams, args.rounds, echoed_total, hung_total
++    );
++}
 -- 
 2.43.0
 
