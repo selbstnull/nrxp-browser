@@ -16,7 +16,9 @@ use nrb_engine_servo::servo::{
     WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
 };
 use nrb_engine_servo::servo::{UserContentManager, UserScript};
-use nrb_engine_servo::{ServoConfig, build_opts, build_preferences, install_crypto_provider};
+use nrb_engine_servo::{
+    ServoConfig, build_opts, build_preferences, install_crypto_provider, install_webrtc_policy,
+};
 use url::Url;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
@@ -156,12 +158,18 @@ fn load_permissions(
 /// Встроенный скрипт звука (во всех фреймах): политика автовоспроизведения, заглушение вкладки, состояние для индикатора.
 const AUDIO_JS: &str = include_str!("audio.js");
 
-/// Политика сторонних куки живёт в настройках движка и читается сетевым потоком на каждый запрос — меняется на лету.
-fn apply_cookie_policy(settings: &nrb_profile::Settings) {
+/// Настройки движка, зависящие от настроек профиля, меняются на лету (читаются при создании страницы/на каждый запрос):
+/// сторонние куки и WebRTC (интерфейс `RTCPeerConnection` появляется у новых страниц; запрещён в герметичном режиме).
+fn apply_engine_policy(settings: &nrb_profile::Settings, webrtc_forbidden: bool) {
     use nrb_engine_servo::servo::prefs;
+    let webrtc = settings.webrtc && !webrtc_forbidden;
     let mut preferences = prefs::get().clone();
-    if preferences.network_block_third_party_cookies != settings.block_third_party_cookies {
+    if preferences.network_block_third_party_cookies != settings.block_third_party_cookies
+        || preferences.dom_webrtc_enabled != webrtc
+    {
         preferences.network_block_third_party_cookies = settings.block_third_party_cookies;
+        preferences.dom_webrtc_enabled = webrtc;
+        preferences.dom_webrtc_transceiver_enabled = webrtc;
         prefs::set(preferences);
     }
 }
@@ -473,6 +481,7 @@ struct Running {
     next_badge_refresh: std::time::Instant,
     /// Звук вкладок: опрос раз в 1,5 с; заглушённые вкладки и последнее известное «звучит».
     next_audio_poll: std::time::Instant,
+    webrtc_forbidden: bool,
     muted_tabs: std::collections::HashSet<WebViewId>,
     audible_tabs: std::collections::HashSet<WebViewId>,
     /// Очередь модальных запросов Servo; рисуется первое, остальные ждут.
@@ -607,6 +616,8 @@ impl Running {
         );
         let content_ctx = Rc::new(window_ctx.offscreen_context(content_size));
 
+        // Политика WebRTC (relay через прокси туннеля) должна стоять до создания первого соединения.
+        install_webrtc_policy(&config.servo);
         let servo = nrb_engine_servo::apply_network(
             ServoBuilder::default()
                 .opts(build_opts(&config.servo))
@@ -673,7 +684,7 @@ impl Running {
             ),
         };
         shared.adblock_on.set(settings.adblock);
-        apply_cookie_policy(&settings);
+        apply_engine_policy(&settings, config.servo.webrtc_forbidden);
         *shared.permissions.borrow_mut() = load_permissions(&store);
         egui_ctx.set_visuals(match settings.theme {
             nrb_profile::Theme::Dark => egui::Visuals::dark(),
@@ -716,6 +727,7 @@ impl Running {
             tunnel: config.tunnel,
             next_badge_refresh: std::time::Instant::now(),
             next_audio_poll: std::time::Instant::now(),
+            webrtc_forbidden: config.servo.webrtc_forbidden,
             muted_tabs: Default::default(),
             audible_tabs: Default::default(),
             modals: Default::default(),
@@ -1159,7 +1171,7 @@ impl Running {
     fn apply_settings(&mut self) {
         self.search = self.settings.search.clone();
         self.shared.adblock_on.set(self.settings.adblock);
-        apply_cookie_policy(&self.settings);
+        apply_engine_policy(&self.settings, self.webrtc_forbidden);
         for tab in &self.tabs {
             self.apply_audio_config(tab);
         }
@@ -1610,7 +1622,12 @@ impl Running {
                 find_actions = self.find_bar.show(ui);
                 content_top = ui.available_rect_before_wrap().top();
             }
-            library_actions = self.library.show(ui.ctx(), &self.store, &mut self.settings);
+            library_actions = self.library.show(
+                ui.ctx(),
+                &self.store,
+                &mut self.settings,
+                !self.webrtc_forbidden,
+            );
             if let Some(handler) = self.downloads.clone() {
                 self.downloads_window.show(ui.ctx(), handler.as_ref());
             }

@@ -48,6 +48,7 @@ impl Library {
         ctx: &egui::Context,
         store: &Store,
         settings: &mut Settings,
+        webrtc_available: bool,
     ) -> Vec<LibraryAction> {
         let mut actions = Vec::new();
         let Some(panel) = self.open else {
@@ -57,7 +58,14 @@ impl Library {
         match panel {
             Panel::History => self.history(ctx, store, &mut keep_open, &mut actions),
             Panel::Bookmarks => Self::bookmarks(ctx, store, &mut keep_open, &mut actions),
-            Panel::Settings => Self::settings(ctx, store, settings, &mut keep_open, &mut actions),
+            Panel::Settings => Self::settings(
+                ctx,
+                store,
+                settings,
+                webrtc_available,
+                &mut keep_open,
+                &mut actions,
+            ),
         }
         if !keep_open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.open = None;
@@ -183,6 +191,7 @@ impl Library {
         ctx: &egui::Context,
         store: &Store,
         settings: &mut Settings,
+        webrtc_available: bool,
         keep_open: &mut bool,
         actions: &mut Vec<LibraryAction>,
     ) {
@@ -227,6 +236,14 @@ impl Library {
             changed |= ui
                 .checkbox(&mut settings.autoplay_with_sound, "Разрешать автовоспроизведение со звуком (иначе ролик со звуком ждёт клика)")
                 .changed();
+            ui.add_enabled_ui(webrtc_available, |ui| {
+                changed |= ui
+                    .checkbox(&mut settings.webrtc, "WebRTC (каналы данных, звонки): только через TURN по TCP и туннель; без TURN-сервера у сайта соединение не установится")
+                    .changed();
+            });
+            if !webrtc_available {
+                ui.weak("WebRTC недоступен в герметичном режиме.");
+            }
             ui.separator();
             egui::CollapsingHeader::new("Разрешения сайтов").show(ui, |ui| {
                 match store.permissions() {

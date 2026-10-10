@@ -94,6 +94,19 @@ pub fn start(args: &NodeArgs) -> Result<Tunnel, String> {
 
 impl Tunnel {
     /// `http://логин:пароль@127.0.0.1:порт` — для дочерних процессов (`NRB_PROXY_URL`).
+    /// Локальный прокси туннеля для WebRTC движка (TURN по TCP): адрес и учётные данные (прокси закрыт паролем).
+    #[cfg(feature = "servo")]
+    pub fn webrtc_proxy(&self) -> nrb_engine_servo::WebRtcProxy {
+        let addr = self.proxy.addr();
+        let (username, password) = self.proxy.credentials();
+        nrb_engine_servo::WebRtcProxy {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            username: username.to_owned(),
+            password: password.to_owned(),
+        }
+    }
+
     pub fn proxy_url(&self) -> String {
         self.proxy.url()
     }

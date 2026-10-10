@@ -1,0 +1,25 @@
+<!doctype html><meta charset=utf-8><title>rtc: init</title>
+<script>
+  // Два RTCPeerConnection в одной странице: канал данных, обмен сообщением. Заголовок — ход проверки.
+  function status(s) { document.title = 'rtc: ' + s; }
+  var steps = [];
+  function step(s) { steps.push(s); status(steps.join(' > ')); }
+  window.addEventListener('error', function (e) { step('error ' + e.message); });
+  try {
+    if (typeof RTCPeerConnection === 'undefined') { status('no-RTCPeerConnection'); throw 0; }
+    var cfg = JSON.parse(new URLSearchParams(location.search).get('cfg') || '{}');
+    var a = new RTCPeerConnection(cfg), b = new RTCPeerConnection(cfg);
+    var cands = [];
+    a.onicecandidate = function (e) { if (!e.candidate) { step('gathered cands=' + cands.length + (cands.length ? ' [' + cands.map(function (c) { var m = /typ (\w+)/.exec(c); return m ? m[1] : '?'; }).join(',') + ']' : '') + (cands.some(function (c) { return /typ (host|srflx)/.test(c); }) ? ' LEAK' : '')); } if (e.candidate) { cands.push(e.candidate.candidate); b.addIceCandidate(e.candidate).catch(function (x) { step('addIce-err ' + x); }); } };
+    b.onicecandidate = function (e) { if (e.candidate) { a.addIceCandidate(e.candidate).catch(function (x) { step('addIce-err ' + x); }); } };
+    a.onicegatheringstatechange = function () { step('gather:' + a.iceGatheringState); };
+    var ch = a.createDataChannel('t');
+    ch.onopen = function () { step('open'); ch.send('hello-rtc'); };
+    b.ondatachannel = function (e) { e.channel.onmessage = function (m) { step('msg=' + m.data); window.__cands = cands; }; };
+    a.onconnectionstatechange = function () { step('a:' + a.connectionState); };
+    a.createOffer().then(function (o) { step('offer'); return a.setLocalDescription(o).then(function () { return b.setRemoteDescription(o); }); })
+      .then(function () { return b.createAnswer(); })
+      .then(function (an) { step('answer'); return b.setLocalDescription(an).then(function () { return a.setRemoteDescription(an); }); })
+      .catch(function (e) { step('fail ' + e); });
+  } catch (e) { if (e !== 0) status('exception ' + e); }
+</script>

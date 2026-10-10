@@ -33,6 +33,8 @@ pub struct Settings {
     pub block_third_party_cookies: bool,
     /// Разрешать автовоспроизведение со звуком без действия пользователя (по умолчанию нет: ролик со звуком ждёт клика).
     pub autoplay_with_sound: bool,
+    /// WebRTC (звонки, каналы данных) — только relay через TURN по TCP, через туннель. По умолчанию выключен.
+    pub webrtc: bool,
 }
 
 impl Default for Settings {
@@ -47,6 +49,7 @@ impl Default for Settings {
             adblock: true,
             block_third_party_cookies: false,
             autoplay_with_sound: false,
+            webrtc: false,
         }
     }
 }

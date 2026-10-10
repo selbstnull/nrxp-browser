@@ -118,6 +118,8 @@ pub fn run(
             profile_dir: profile.for_window(),
             devtools_port: devtools,
             user_scripts: Vec::new(),
+            webrtc_proxy: tunnel.as_ref().map(|t| t.webrtc_proxy()),
+            webrtc_forbidden: node.hermetic,
         },
         search: search.to_owned(),
         userscripts,

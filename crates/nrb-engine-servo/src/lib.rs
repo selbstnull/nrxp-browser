@@ -32,7 +32,41 @@ pub struct ServoConfig {
     /// Все исходящие TCP-соединения движка идут через этот коннектор (N2 форка): Servo не открывает сокетов сам, настройки
     /// прокси `proxy` при этом не действуют. Нужен форк `nrxp-servo`.
     pub network_connector: Option<ConnectorHandle>,
+    /// Локальный HTTP-прокси туннеля для WebRTC (TURN по TCP идёт через него, значит, через туннель). `None` — без туннеля.
+    pub webrtc_proxy: Option<WebRtcProxy>,
+    /// WebRTC запрещён совсем (герметичный режим: сокеты libnice вне нашего контроля, прокси туннеля из пустого
+    /// пространства имён недоступен).
+    pub webrtc_forbidden: bool,
 }
+
+/// Адрес и учётные данные локального прокси для ICE/TURN.
+#[derive(Clone, Debug)]
+pub struct WebRtcProxy {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+}
+
+/// Ставит сетевую политику WebRTC движка: только relay (TURN по TCP), без UDP, без host/STUN-кандидатов и UPnP; TURN идёт
+/// через прокси туннеля. Прямой режим WebRTC в браузере не предусмотрен. Без фичи `media` WebRTC в движке нет.
+#[cfg(feature = "media")]
+pub fn install_webrtc_policy(config: &ServoConfig) {
+    servo::set_webrtc_network_policy(servo::WebRtcNetworkPolicy {
+        relay_only: true,
+        proxy: config
+            .webrtc_proxy
+            .as_ref()
+            .map(|p| (p.host.clone(), p.port)),
+        proxy_credentials: config
+            .webrtc_proxy
+            .as_ref()
+            .map(|p| (p.username.clone(), p.password.clone())),
+    });
+}
+
+#[cfg(not(feature = "media"))]
+pub fn install_webrtc_policy(_config: &ServoConfig) {}
 
 /// Обёртка над `Arc<dyn NetworkConnector>`: нужна, чтобы `ServoConfig` оставался `Debug + Clone`.
 #[derive(Clone)]
@@ -84,6 +118,8 @@ pub fn apply_pref_overrides(prefs: &mut Preferences, spec: &str) {
             "credential_management" => Some(&mut prefs.dom_credential_management_enabled),
             "worklet" => Some(&mut prefs.dom_worklet_enabled),
             "resize_observer" => Some(&mut prefs.dom_resize_observer_enabled),
+            "webrtc" => Some(&mut prefs.dom_webrtc_enabled),
+            "webrtc_transceiver" => Some(&mut prefs.dom_webrtc_transceiver_enabled),
             _ => None,
         };
         match slot {

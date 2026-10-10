@@ -93,6 +93,8 @@ fn run_inner(args: Args) -> i32 {
             .and_then(|path| std::fs::read_to_string(path).ok())
             .into_iter()
             .collect(),
+        webrtc_proxy: None,
+        webrtc_forbidden: true,
     }) {
         Ok(engine) => engine,
         Err(error) => {
