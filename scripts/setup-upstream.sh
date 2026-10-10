@@ -21,7 +21,12 @@ else
   else
     git -C "$SRC" worktree add -b "$BRANCH" "$PWD/$WT" HEAD
     for patch in patches/proxy/*.patch; do
-      git -C "$WT" -c user.name="${GIT_AUTHOR_NAME:-nrb}" -c user.email="${GIT_AUTHOR_EMAIL:-nrb@localhost}" am "$PWD/$patch"
+      # Ядро с 2026-10-10 уже содержит наш коммит (netrunner-proxy main, a43a077): тогда патч уже применён — пропускаем.
+      if git -C "$WT" apply --check -R "$PWD/$patch" >/dev/null 2>&1; then
+        echo "патч уже в ядре: $patch"
+      else
+        git -C "$WT" -c user.name="${GIT_AUTHOR_NAME:-nrb}" -c user.email="${GIT_AUTHOR_EMAIL:-nrb@localhost}" am "$PWD/$patch"
+      fi
     done
   fi
   echo "готово: $WT"

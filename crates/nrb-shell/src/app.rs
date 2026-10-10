@@ -11,9 +11,10 @@ use nrb_engine_servo::servo::{
     DownloadStream, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent,
     KeyboardEvent as ServoKeyboardEvent, LoadStatus, MouseButton, MouseButtonAction,
     MouseButtonEvent, MouseMoveEvent, OffscreenRenderingContext, PermissionRequest, PixelFormat,
-    RenderingContext, Servo, ServoBuilder, ServoDelegate, SimpleDialog, WebResourceLoad,
-    WebResourceResponse, WebView, WebViewBuilder, WebViewDelegate, WebViewId, WebViewPoint,
-    WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
+    RenderingContext, Servo, ServoBuilder, ServoDelegate, SimpleDialog, TouchEvent, TouchEventType,
+    TouchId, TouchPointerType, WebResourceLoad, WebResourceResponse, WebView, WebViewBuilder,
+    WebViewDelegate, WebViewId, WebViewPoint, WheelDelta, WheelEvent, WheelMode,
+    WindowRenderingContext,
 };
 use nrb_engine_servo::servo::{UserContentManager, UserScript};
 use nrb_engine_servo::{
@@ -81,8 +82,25 @@ impl Default for ShellConfig {
 }
 
 pub fn run(config: ShellConfig) -> anyhow::Result<()> {
-    install_crypto_provider();
     let event_loop = EventLoop::<WakerEvent>::with_user_event().build()?;
+    run_event_loop(event_loop, config)
+}
+
+/// Точка входа Android: цикл событий строится поверх `AndroidApp` (его отдаёт `android_main` в крейте nrb-android).
+#[cfg(target_os = "android")]
+pub fn run_android(
+    config: ShellConfig,
+    app: winit::platform::android::activity::AndroidApp,
+) -> anyhow::Result<()> {
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+    let event_loop = EventLoop::<WakerEvent>::with_user_event()
+        .with_android_app(app)
+        .build()?;
+    run_event_loop(event_loop, config)
+}
+
+fn run_event_loop(event_loop: EventLoop<WakerEvent>, config: ShellConfig) -> anyhow::Result<()> {
+    install_crypto_provider();
     let mut app = App::Initial {
         proxy: event_loop.create_proxy(),
         config: Some(Box::new(config)),
@@ -482,6 +500,8 @@ struct Running {
     /// Звук вкладок: опрос раз в 1,5 с; заглушённые вкладки и последнее известное «звучит».
     next_audio_poll: std::time::Instant,
     webrtc_forbidden: bool,
+    /// Android: поверхность окна исчезла (приложение свёрнуто) — не рисуем, пока она не вернётся.
+    suspended: bool,
     muted_tabs: std::collections::HashSet<WebViewId>,
     audible_tabs: std::collections::HashSet<WebViewId>,
     /// Очередь модальных запросов Servo; рисуется первое, остальные ждут.
@@ -501,6 +521,17 @@ struct Running {
 
 impl ApplicationHandler<WakerEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let App::Running(running) = self {
+            // Android: поверхность вернулась. Контекст Servo привязан к старой поверхности — пересоздание не сделано, пока
+            // страница не перерисуется после смены размера (см. docs/PLATFORMS.md, «Жизненный цикл»).
+            if running.suspended {
+                running.suspended = false;
+                let size = running.window.inner_size();
+                running.window_ctx.resize(size);
+                running.window.request_redraw();
+            }
+            return;
+        }
         let App::Initial { proxy, config } = self else {
             return;
         };
@@ -511,6 +542,13 @@ impl ApplicationHandler<WakerEvent> for App {
                 eprintln!("не удалось запустить оболочку: {error:#}");
                 event_loop.exit();
             }
+        }
+    }
+
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if let App::Running(running) = self {
+            running.suspended = true;
+            running.save_session(true);
         }
     }
 
@@ -728,6 +766,7 @@ impl Running {
             next_badge_refresh: std::time::Instant::now(),
             next_audio_poll: std::time::Instant::now(),
             webrtc_forbidden: config.servo.webrtc_forbidden,
+            suspended: false,
             muted_tabs: Default::default(),
             audible_tabs: Default::default(),
             modals: Default::default(),
@@ -1305,6 +1344,11 @@ impl Running {
             _ => String::new(),
         };
         match key {
+            // Android: системная кнопка «Назад» — назад по истории, а без истории сворачивает приложение (выход из цикла).
+            WKey::Named(WNamedKey::GoBack) => match self.active_tab() {
+                Some(tab) if tab.can_go_back() => self.apply(Action::Back),
+                _ => self.exit = true,
+            },
             WKey::Named(WNamedKey::ArrowLeft) if alt => self.apply(Action::Back),
             WKey::Named(WNamedKey::ArrowRight) if alt => self.apply(Action::Forward),
             WKey::Named(WNamedKey::F5) => self.apply(Action::Reload),
@@ -1435,6 +1479,35 @@ impl Running {
                     )));
                 }
             }
+            WindowEvent::Touch(touch) => {
+                // Тач в области страницы — в Servo (прокрутка, касание → клик, жесты); по панели инструментов — egui (он уже
+                // получил событие выше и превращает его в указатель).
+                if touch.location.y >= f64::from(self.toolbar_px)
+                    && self.modals.is_empty()
+                    && !self.egui_ctx.egui_wants_pointer_input()
+                    && let Some(tab) = self.active_tab()
+                {
+                    let event_type = match touch.phase {
+                        winit::event::TouchPhase::Started => TouchEventType::Down,
+                        winit::event::TouchPhase::Moved => TouchEventType::Move,
+                        winit::event::TouchPhase::Ended => TouchEventType::Up,
+                        winit::event::TouchPhase::Cancelled => TouchEventType::Cancel,
+                    };
+                    let point = WebViewPoint::Device(DevicePoint::new(
+                        touch.location.x as f32,
+                        (touch.location.y - f64::from(self.toolbar_px)) as f32,
+                    ));
+                    if matches!(event_type, TouchEventType::Down) {
+                        tab.set_focused(true);
+                    }
+                    tab.notify_input_event(InputEvent::Touch(TouchEvent::new(
+                        event_type,
+                        TouchId(touch.id as i32),
+                        point,
+                        TouchPointerType::Touch,
+                    )));
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.over_content()
                     && let Some(tab) = self.active_tab()
@@ -1480,6 +1553,7 @@ impl Running {
                     )));
                 }
             }
+            WindowEvent::RedrawRequested if self.suspended => {}
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
         }

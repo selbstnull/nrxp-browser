@@ -23,3 +23,8 @@ egui-winit = { version = "0.36", default-features = false, features = ["clipboar
 egui_glow = "0.36"
 keyboard-types = "0.8"
 euclid = "0.22"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# На Android окном и циклом событий управляет NativeActivity (точка входа `android_main` — в крейте nrb-android).
+winit = { version = "0.30", features = ["android-native-activity"] }
+

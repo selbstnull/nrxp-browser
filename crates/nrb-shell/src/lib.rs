@@ -19,3 +19,9 @@ pub use downloads::{
     BodyEvent, DownloadHandler, DownloadRow, IncomingDownload, RowState, looks_like_download,
 };
 pub use nodes::{DeviceRow, NodeManager, OwnNode, PairedNode};
+
+#[cfg(target_os = "android")]
+pub use app::run_android;
+/// Тип `AndroidApp` из android-activity (через winit): его получает `android_main`.
+#[cfg(target_os = "android")]
+pub use winit::platform::android::activity::AndroidApp;

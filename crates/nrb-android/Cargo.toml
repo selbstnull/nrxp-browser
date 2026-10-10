@@ -1,0 +1,20 @@
+[package]
+name = "nrb-android"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Android-приложение nrb: точка входа NativeActivity (скелет; см. docs/PLATFORMS.md)"
+
+[lib]
+# libnrb_android.so — имя задаёт `android.app.lib_name` в AndroidManifest.xml.
+crate-type = ["cdylib", "rlib"]
+
+# Вне Android крейт пустой: его компилирует `cargo check --workspace` на любой ОС.
+[target.'cfg(target_os = "android")'.dependencies]
+nrb-engine-servo = { path = "../nrb-engine-servo" }
+nrb-shell = { path = "../nrb-shell" }
+anyhow.workspace = true
+tracing.workspace = true
+android_logger = "0.14"
+log = "0.4"
