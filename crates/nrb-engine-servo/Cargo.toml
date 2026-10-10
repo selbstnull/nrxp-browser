@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 description = "Реализация nrb-engine на Servo"
 
+[features]
+default = []
+# Воспроизведение <video>/<audio> через системный GStreamer (нужны libgstreamer1.0-dev, libgstreamer-plugins-base1.0-dev,
+# libgstreamer-plugins-bad1.0-dev при сборке и gstreamer1.0-plugins-good/-libav при запуске). Без неё медиа не играет.
+media = ["servo/media-gstreamer"]
+
 [dependencies]
 nrb-engine = { path = "../nrb-engine" }
 nrb-transport = { path = "../nrb-transport" }

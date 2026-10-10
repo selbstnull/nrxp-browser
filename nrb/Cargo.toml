@@ -10,6 +10,8 @@ description = "netrunner-browser: браузер + узел NRXP"
 default = []
 # Движок Servo (тяжёлая сборка). Без неё бинарь собирается за секунды — для узла/тестов.
 servo = ["dep:nrb-engine-servo", "dep:nrb-shell"]
+# <video>/<audio> через системный GStreamer (см. nrb-engine-servo).
+media = ["servo", "nrb-engine-servo/media"]
 
 [dependencies]
 anyhow.workspace = true

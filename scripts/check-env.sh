@@ -24,7 +24,8 @@ echo "== rust =="; rustc --version 2>&1; cargo --version 2>&1
 echo "== cpu/ram/disk =="; nproc; free -g | awk 'NR==2{print $2" GiB RAM"}'; df -h . | tail -1
 echo "== display =="; echo "DISPLAY=${DISPLAY:-} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}"
 echo "== optional: GStreamer (для <video>/<audio>, фича media-gstreamer) =="
-pkg-config --exists gstreamer-1.0 && echo "gstreamer-1.0: ok" || echo "gstreamer-1.0: нет (dev-пакеты: libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev)"
+if pkg-config --exists gstreamer-1.0 gstreamer-app-1.0 gstreamer-plugins-bad-1.0 gstreamer-gl-1.0; then echo "gstreamer dev: ok (сборка: cargo build -p nrb --features media)"
+else echo "gstreamer dev: нет — sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-good gstreamer1.0-libav"; fi
 echo "== не найдены бинарники =="; printf '%s\n' "${missing_bins[@]:-—}"
 echo "== не установлены пакеты =="; printf '%s\n' "${missing_pkgs[@]:-—}"
 if [ "${#missing_pkgs[@]}" -gt 0 ]; then

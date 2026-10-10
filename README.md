@@ -32,6 +32,7 @@
 | Поиск по странице (Ctrl+F; подсветка, счётчик, переходы) | работает скриптом в странице (меняет DOM на время поиска); без shadow DOM и чужих iframe |
 | Данные сайтов (Ctrl+Shift+Del: куки, localStorage, sessionStorage, удаление) | работает; настройка «Блокировать сторонние куки» (по умолчанию выключена; движок форка не отправляет и не сохраняет куки запросов к другому сайту, `scripts/gui-thirdparty.sh`) — не закрывает `document.cookie` из сторонних фреймов, судит по ближайшему документу, а не по верхнему; запрос разрешения (уведомления, геолокация и т. п.) имеет галочку «Запомнить для этого сайта» — решение хранится в профиле по источнику с портом, список со сбросом — в «Настройках» (`scripts/gui-permissions.sh`); запрет «на этот раз» (Esc) не запоминается |
 | Печать в PDF (Ctrl+P) | работает **как картинки** (снимок страницы полосами → листы A4; `scripts/gui-print.sh`); текст в PDF не выделяется — настоящая печать требует страничной вёрстки в движке |
+| `<video>`/`<audio>` (WebM VP8/VP9, MP4 H.264+AAC и что умеет системный GStreamer) | работает при сборке `--features media` (нужны dev-пакеты GStreamer при сборке и `gstreamer1.0-plugins-good`, `-libav` при запуске; `scripts/gui-media.sh`); звук не проверялся автоматически; без фичи `media` видео не играет |
 | Менеджер паролей, MSE-видео (YouTube и т. п.), расширения WebExtensions | нет: в Servo 0.7 нет MSE и нужных хуков — см. план форка `nrxp-servo` |
 
 План — [docs/ITERATIONS.md](docs/ITERATIONS.md) (рабочий файл), журнал — [docs/PROGRESS.md](docs/PROGRESS.md),
@@ -45,6 +46,7 @@
 scripts/check-env.sh                 # какие системные пакеты не хватает (clang, cmake, fontconfig, …)
 scripts/setup-upstream.sh            # worktree netrunner-proxy с нашими патчами + servo-net с патчем WebSocket → .nrb-dev/
 cargo build -p nrb --features servo  # с движком (первая сборка Servo — минуты, ~10 ГБ target/)
+cargo build -p nrb --features media  # то же + воспроизведение видео (системный GStreamer)
 cargo build -p nrb                   # без движка: узел, fetch, corpus-оркестратор
 ```
 
@@ -83,6 +85,7 @@ scripts/gui-find.sh                           # поиск по странице
 scripts/gui-sitedata.sh                       # окно «Данные сайтов»
 scripts/gui-clipboard.sh                      # буфер обмена страницы
 scripts/gui-print.sh                          # печать в PDF (нужен poppler-utils для проверки)
+scripts/gui-media.sh                          # <video>: WebM и MP4 (сборка --features media, нужен ffmpeg для клипов)
 scripts/egress-e2e.sh                         # reverse-egress: клиент → узел → домашний выход (3 процесса, loopback)
 scripts/deploy-e2e.sh                         # деплой в тестовый контейнер с systemd (нужен docker)
 ```
