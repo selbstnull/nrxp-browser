@@ -43,5 +43,20 @@ else
   echo "FAIL файл не загружен или повреждён: $(ls -la "$TMP/dl" 2>&1 | tr '\n' ' ')"; fail=1
 fi
 [ -z "$(ls "$TMP/dl" | grep '\.part$')" ] && echo "ok   .part не остался" || { echo "FAIL остался .part"; fail=1; }
+# N3b: решение принимает движок по заголовкам ответа, а не по адресу — динамический эндпоинт без расширения (имя из
+# Content-Disposition, русское) и POST-форма.
+click 60 300; sleep 4
+check "после экспорта страница осталась на месте" "dl-page"
+CSVF="$TMP/dl/отчёт.csv"
+for _ in $(seq 1 20); do [ -f "$CSVF" ] && break; sleep 0.5; done
+[ -f "$CSVF" ] && [ "$(cat "$CSVF")" = "$(printf 'a,b\n1,2')" ] && echo "ok   динамический эндпоинт: имя из Content-Disposition, кука учтена" \
+  || { echo "FAIL экспорт не скачан: $(ls -la "$TMP/dl" 2>&1 | tr '\n' ' ')"; fail=1; }
+click 60 410; sleep 4
+check "после POST-загрузки страница осталась на месте" "dl-page"
+POSTF="$TMP/dl/report.bin"
+for _ in $(seq 1 20); do [ -f "$POSTF" ] && break; sleep 0.5; done
+[ -f "$POSTF" ] && [ "$(cat "$POSTF")" = "post-report-body" ] && echo "ok   POST-загрузка принята движком" \
+  || { echo "FAIL POST-загрузка не получена: $(ls -la "$TMP/dl" 2>&1 | tr '\n' ' ')"; fail=1; }
+[ -z "$(ls "$TMP/dl" | grep '\.part$')" ] && echo "ok   .part не остался (все)" || { echo "FAIL остался .part"; fail=1; }
 shot 02-window
 gui_finish

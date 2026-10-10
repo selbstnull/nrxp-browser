@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nrb_net::Fetcher;
-use nrb_net::download::{DownloadRequest, DownloadState, Downloads};
+use nrb_net::download::{BodyEvent, DownloadRequest, DownloadState, Downloads, IncomingDownload};
 use nrb_shell::{DownloadHandler, DownloadRow, RowState};
 use nrb_transport::Transport;
 use url::Url;
@@ -80,6 +80,27 @@ impl Handler {
 }
 
 impl DownloadHandler for Handler {
+    fn ingest(
+        &self,
+        incoming: nrb_shell::IncomingDownload,
+        events: Box<dyn Iterator<Item = nrb_shell::BodyEvent> + Send>,
+    ) {
+        self.downloads.ingest(
+            IncomingDownload {
+                url: incoming.url,
+                suggested_name: incoming.suggested_name,
+                mime: incoming.mime,
+                total: incoming.total,
+                dest_dir: self.dir.clone(),
+            },
+            events.map(|event| match event {
+                nrb_shell::BodyEvent::Chunk(chunk) => BodyEvent::Chunk(chunk),
+                nrb_shell::BodyEvent::Done => BodyEvent::Done,
+                nrb_shell::BodyEvent::Failed(reason) => BodyEvent::Failed(reason),
+            }),
+        );
+    }
+
     fn start(&self, url: &Url, cookies: Option<String>, referer: Option<String>) {
         self.downloads.start(
             self.fetcher.clone(),

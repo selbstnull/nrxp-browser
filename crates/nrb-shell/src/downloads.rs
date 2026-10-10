@@ -24,8 +24,33 @@ pub struct DownloadRow {
     pub state: RowState,
 }
 
+/// Загрузка, которую движок принял и качает сам (N3b): что известно до тела.
+#[derive(Clone, Debug)]
+pub struct IncomingDownload {
+    pub url: Url,
+    /// Имя от сервера, как пришло (не очищено).
+    pub suggested_name: Option<String>,
+    pub mime: Option<String>,
+    pub total: Option<u64>,
+}
+
+/// Событие тела загрузки.
+#[derive(Debug)]
+pub enum BodyEvent {
+    Chunk(Vec<u8>),
+    Done,
+    Failed(String),
+}
+
 /// Реализует `nrb`: оболочка о транспорте и каталоге загрузок ничего не знает.
 pub trait DownloadHandler: Send + Sync {
+    /// Принять загрузку, чьё тело отдаёт движок (`Content-Disposition: attachment`, неотображаемый тип, в том числе `POST`):
+    /// без повторного запроса, куки и авторизация уже учтены. Итератор блокируется на приёме; его drop отменяет передачу.
+    fn ingest(
+        &self,
+        incoming: IncomingDownload,
+        events: Box<dyn Iterator<Item = BodyEvent> + Send>,
+    );
     /// Начать загрузку. `cookies` — значение заголовка `Cookie`, `referer` — адрес страницы, с которой пошла загрузка.
     fn start(&self, url: &Url, cookies: Option<String>, referer: Option<String>);
     fn list(&self) -> Vec<DownloadRow>;

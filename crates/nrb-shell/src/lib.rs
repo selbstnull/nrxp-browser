@@ -15,5 +15,7 @@ mod site_data;
 mod ui;
 
 pub use app::{ShellConfig, TunnelStatus, run};
-pub use downloads::{DownloadHandler, DownloadRow, RowState, looks_like_download};
+pub use downloads::{
+    BodyEvent, DownloadHandler, DownloadRow, IncomingDownload, RowState, looks_like_download,
+};
 pub use nodes::{DeviceRow, NodeManager, OwnNode, PairedNode};

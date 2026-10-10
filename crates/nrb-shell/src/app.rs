@@ -7,13 +7,13 @@ use dpi::PhysicalSize;
 use nrb_engine::omnibox;
 use nrb_engine_servo::servo::{
     AllowOrDenyRequest, AuthenticationRequest, CompositionEvent, CompositionState,
-    CreateNewWebViewRequest, Cursor, DeviceIntRect, DevicePoint, EmbedderControl,
-    EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent, KeyboardEvent as ServoKeyboardEvent,
-    LoadStatus, MouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
-    OffscreenRenderingContext, PermissionRequest, PixelFormat, RenderingContext, Servo,
-    ServoBuilder, ServoDelegate, SimpleDialog, WebResourceLoad, WebResourceResponse, WebView,
-    WebViewBuilder, WebViewDelegate, WebViewId, WebViewPoint, WheelDelta, WheelEvent, WheelMode,
-    WindowRenderingContext,
+    CreateNewWebViewRequest, Cursor, DeviceIntRect, DevicePoint, DownloadEvent, DownloadRequest,
+    DownloadStream, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent,
+    KeyboardEvent as ServoKeyboardEvent, LoadStatus, MouseButton, MouseButtonAction,
+    MouseButtonEvent, MouseMoveEvent, OffscreenRenderingContext, PermissionRequest, PixelFormat,
+    RenderingContext, Servo, ServoBuilder, ServoDelegate, SimpleDialog, WebResourceLoad,
+    WebResourceResponse, WebView, WebViewBuilder, WebViewDelegate, WebViewId, WebViewPoint,
+    WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
 };
 use nrb_engine_servo::servo::{UserContentManager, UserScript};
 use nrb_engine_servo::{ServoConfig, build_opts, build_preferences, install_crypto_provider};
@@ -26,7 +26,9 @@ use winit::keyboard::{Key as WKey, ModifiersState, NamedKey as WNamedKey};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{CursorIcon, Window, WindowId};
 
-use crate::downloads::{DownloadHandler, DownloadsWindow, looks_like_download};
+use crate::downloads::{
+    BodyEvent, DownloadHandler, DownloadsWindow, IncomingDownload, looks_like_download,
+};
 use crate::find::{self, FindAction, FindBar};
 use crate::keys;
 use crate::library::{Library, LibraryAction, Panel};
@@ -129,6 +131,8 @@ struct Shared {
     /// Включён ли перехват загрузок (есть обработчик) и очередь перехваченных: (адрес, страница-источник).
     downloads_enabled: Cell<bool>,
     download_requests: RefCell<Vec<(Url, Option<Url>)>>,
+    /// Загрузки, принятые у движка (N3b): описание и поток тела; передаются обработчику из главного цикла.
+    engine_downloads: RefCell<Vec<(IncomingDownload, DownloadStream)>>,
 }
 
 /// Адрес источника для подписи окон: `https://host`; для страниц без хоста — полный URL.
@@ -170,6 +174,28 @@ impl WebViewDelegate for Delegate {
         if status == LoadStatus::Complete {
             self.0.completed.borrow_mut().push(webview.id());
         }
+        self.0.redraw();
+    }
+
+    /// Движок сообщил, что ответ навигации — файл (N3b): принимаем и передаём тело обработчику загрузок. Без обработчика
+    /// (приватный режим без каталога и т. п.) отказываем — движок поведёт себя как раньше.
+    fn request_download(&self, _webview: WebView, request: DownloadRequest) {
+        if !self.0.downloads_enabled.get() {
+            request.decline();
+            return;
+        }
+        let incoming = IncomingDownload {
+            url: request.url(),
+            suggested_name: request.suggested_filename().map(str::to_owned),
+            mime: request.mime().map(str::to_owned),
+            total: request.content_length(),
+        };
+        // Небольшой буфер: медленный диск замедляет сеть, а не раздувает память.
+        let stream = request.accept(16);
+        self.0
+            .engine_downloads
+            .borrow_mut()
+            .push((incoming, stream));
         self.0.redraw();
     }
 
@@ -553,6 +579,7 @@ impl Running {
             blocked: Cell::new(0),
             downloads_enabled: Cell::new(config.downloads.is_some()),
             download_requests: RefCell::default(),
+            engine_downloads: RefCell::default(),
             completed: RefCell::default(),
             titled: RefCell::default(),
         });
@@ -764,6 +791,25 @@ impl Running {
 
     /// Перехваченные загрузки: берём куки страницы из хранилища Servo и отдаём обработчику (клиент `nrb-net`, тот же транспорт).
     fn start_pending_downloads(&mut self) {
+        let accepted: Vec<_> = self
+            .shared
+            .engine_downloads
+            .borrow_mut()
+            .drain(..)
+            .collect();
+        if let Some(handler) = self.downloads.clone() {
+            for (incoming, mut stream) in accepted {
+                let events = std::iter::from_fn(move || {
+                    stream.blocking_recv().map(|event| match event {
+                        DownloadEvent::Chunk(bytes) => BodyEvent::Chunk(bytes.to_vec()),
+                        DownloadEvent::Done => BodyEvent::Done,
+                        DownloadEvent::Failed(reason) => BodyEvent::Failed(reason),
+                    })
+                });
+                handler.ingest(incoming, Box::new(events));
+                self.downloads_window.open = true;
+            }
+        }
         let pending: Vec<(Url, Option<Url>)> = self
             .shared
             .download_requests

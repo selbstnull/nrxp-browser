@@ -46,6 +46,25 @@ pub struct DownloadRequest {
     pub user_agent: Option<String>,
 }
 
+/// Загрузка, которую качает движок (N3b): что о ней известно до тела.
+#[derive(Debug, Clone)]
+pub struct IncomingDownload {
+    pub url: Url,
+    /// Имя от сервера, как пришло (не очищено).
+    pub suggested_name: Option<String>,
+    pub mime: Option<String>,
+    pub total: Option<u64>,
+    pub dest_dir: PathBuf,
+}
+
+/// Событие тела загрузки от движка.
+#[derive(Debug)]
+pub enum BodyEvent {
+    Chunk(Vec<u8>),
+    Done,
+    Failed(String),
+}
+
 #[derive(Default)]
 pub struct Downloads {
     list: Mutex<Vec<DownloadInfo>>,
@@ -128,6 +147,126 @@ impl Downloads {
             this.cancel.lock().expect("mutex загрузок").remove(&id);
         });
         Some(id)
+    }
+
+    /// Принимает загрузку, которую движок уже качает сам (N3b): тело приходит как поток событий, обычный путь —
+    /// безопасное имя, `.part` до завершения, отмена. Блокирующий приём идёт в отдельном потоке; отмена или ошибка записи
+    /// роняют `events`, и движок прекращает передачу. Возвращает идентификатор.
+    pub fn ingest(
+        self: &Arc<Self>,
+        incoming: IncomingDownload,
+        events: impl Iterator<Item = BodyEvent> + Send + 'static,
+    ) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.cancel
+            .lock()
+            .expect("mutex загрузок")
+            .insert(id, cancelled.clone());
+        let name = name_from_suggested(
+            incoming.suggested_name.clone(),
+            &incoming.url,
+            incoming.mime.as_deref(),
+        );
+        self.list
+            .lock()
+            .expect("mutex загрузок")
+            .push(DownloadInfo {
+                id,
+                source_host: incoming.url.host_str().unwrap_or("").to_owned(),
+                file_name: name.clone(),
+                path: None,
+                received: 0,
+                total: incoming.total,
+                state: DownloadState::Running,
+            });
+        let this = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("nrb-download".into())
+            .spawn({
+                let this = this.clone();
+                let cancelled = cancelled.clone();
+                move || {
+                    let outcome =
+                        this.run_ingest(id, &incoming.dest_dir, &name, events, &cancelled);
+                    let state = match outcome {
+                        Ok(()) => DownloadState::Done,
+                        Err(_) if cancelled.load(Ordering::SeqCst) => DownloadState::Cancelled,
+                        Err(error) => DownloadState::Failed(error),
+                    };
+                    this.update(id, |info| info.state = state);
+                    this.cancel.lock().expect("mutex загрузок").remove(&id);
+                }
+            });
+        if let Err(error) = spawned {
+            this.update(id, |info| {
+                info.state = DownloadState::Failed(error.to_string())
+            });
+            this.cancel.lock().expect("mutex загрузок").remove(&id);
+        }
+        id
+    }
+
+    fn run_ingest(
+        &self,
+        id: u64,
+        dest_dir: &Path,
+        name: &str,
+        events: impl Iterator<Item = BodyEvent>,
+        cancelled: &AtomicBool,
+    ) -> Result<(), String> {
+        std::fs::create_dir_all(dest_dir).map_err(|e| e.to_string())?;
+        let (final_path, part_path, mut file) =
+            create_unique(dest_dir, name).map_err(|e| e.to_string())?;
+        self.update(id, |info| {
+            info.file_name = final_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| name.to_owned());
+            info.path = Some(final_path.clone());
+        });
+        let mut received = 0u64;
+        let mut finished = false;
+        let mut error: Option<String> = None;
+        for event in events {
+            if cancelled.load(Ordering::SeqCst) {
+                error = Some("отменено".into());
+                break;
+            }
+            match event {
+                BodyEvent::Chunk(chunk) => {
+                    if let Err(e) = file.write_all(&chunk) {
+                        error = Some(e.to_string());
+                        break;
+                    }
+                    received += chunk.len() as u64;
+                    self.update(id, |info| info.received = received);
+                }
+                BodyEvent::Done => {
+                    finished = true;
+                    break;
+                }
+                BodyEvent::Failed(reason) => {
+                    error = Some(reason);
+                    break;
+                }
+            }
+        }
+        let result = match (finished, error) {
+            (true, _) => file
+                .flush()
+                .and_then(|()| {
+                    drop(file);
+                    std::fs::rename(&part_path, &final_path)
+                })
+                .map_err(|e| e.to_string()),
+            (false, Some(error)) => Err(error),
+            (false, None) => Err("передача оборвалась".into()),
+        };
+        if result.is_err() {
+            let _ = std::fs::remove_file(&part_path);
+        }
+        result
     }
 
     async fn run(
@@ -236,7 +375,20 @@ pub fn file_name_from(
     url: &Url,
     content_type: Option<&str>,
 ) -> String {
-    let from_header = content_disposition.and_then(parse_content_disposition);
+    name_from_suggested(
+        content_disposition.and_then(parse_content_disposition),
+        url,
+        content_type,
+    )
+}
+
+/// То же для имени, которое уже разобрал движок (`filename*`/`filename`, не очищено): очистка, запасное имя из URL и расширение по типу.
+pub fn name_from_suggested(
+    suggested: Option<String>,
+    url: &Url,
+    content_type: Option<&str>,
+) -> String {
+    let from_header = suggested;
     let from_url = url
         .path_segments()
         .and_then(|mut s| s.next_back())
@@ -410,6 +562,107 @@ mod tests {
 
     fn url(s: &str) -> Url {
         s.parse().unwrap()
+    }
+
+    fn incoming(dir: &Path, name: Option<&str>) -> IncomingDownload {
+        IncomingDownload {
+            url: url("https://x.test/dl?id=1"),
+            suggested_name: name.map(str::to_owned),
+            mime: Some("application/zip".into()),
+            total: Some(6),
+            dest_dir: dir.to_owned(),
+        }
+    }
+
+    fn wait_done(downloads: &Downloads, id: u64) -> DownloadInfo {
+        for _ in 0..500 {
+            let info = downloads.list().into_iter().find(|d| d.id == id).unwrap();
+            if info.state != DownloadState::Running {
+                return info;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("загрузка не завершилась");
+    }
+
+    #[test]
+    fn ingest_writes_the_stream_under_a_safe_name() {
+        let dir = tempfile_dir("ingest-ok");
+        let downloads = Downloads::new();
+        let id = downloads.ingest(
+            incoming(&dir, Some("../../evil:name.zip")),
+            vec![
+                BodyEvent::Chunk(b"abc".to_vec()),
+                BodyEvent::Chunk(b"def".to_vec()),
+                BodyEvent::Done,
+            ]
+            .into_iter(),
+        );
+        let info = wait_done(&downloads, id);
+        assert_eq!(info.state, DownloadState::Done);
+        assert_eq!(info.file_name, "evil_name.zip");
+        assert_eq!(info.received, 6);
+        let path = info.path.unwrap();
+        assert_eq!(path.parent().unwrap(), dir);
+        assert_eq!(std::fs::read(&path).unwrap(), b"abcdef");
+        assert!(!dir.join(format!("{}.part", info.file_name)).exists());
+
+        // The same name again does not overwrite.
+        let id = downloads.ingest(
+            incoming(&dir, Some("evil_name.zip")),
+            vec![BodyEvent::Chunk(b"x".to_vec()), BodyEvent::Done].into_iter(),
+        );
+        let second = wait_done(&downloads, id);
+        assert_eq!(second.file_name, "evil_name (1).zip");
+        assert_eq!(std::fs::read(&path).unwrap(), b"abcdef");
+    }
+
+    #[test]
+    fn ingest_failure_leaves_no_file() {
+        let dir = tempfile_dir("ingest-fail");
+        let downloads = Downloads::new();
+        let id = downloads.ingest(
+            incoming(&dir, None),
+            vec![
+                BodyEvent::Chunk(b"abc".to_vec()),
+                BodyEvent::Failed("обрыв".into()),
+            ]
+            .into_iter(),
+        );
+        let info = wait_done(&downloads, id);
+        assert_eq!(info.state, DownloadState::Failed("обрыв".into()));
+        assert_eq!(info.file_name, "dl.zip");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+
+        // A stream that just ends is a failure, not a success.
+        let id = downloads.ingest(incoming(&dir, None), std::iter::empty());
+        assert!(matches!(
+            wait_done(&downloads, id).state,
+            DownloadState::Failed(_)
+        ));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn ingest_can_be_cancelled() {
+        let dir = tempfile_dir("ingest-cancel");
+        let downloads = Downloads::new();
+        let (tx, rx) = std::sync::mpsc::channel::<BodyEvent>();
+        let id = downloads.ingest(incoming(&dir, Some("big.zip")), rx.into_iter());
+        let _ = tx.send(BodyEvent::Chunk(vec![0; 10]));
+        downloads.cancel(id);
+        // The next event is where the cancellation is noticed (the receiver may already be gone).
+        let _ = tx.send(BodyEvent::Chunk(vec![0; 10]));
+        let info = wait_done(&downloads, id);
+        assert_eq!(info.state, DownloadState::Cancelled);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    fn tempfile_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("nrb-dl-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]

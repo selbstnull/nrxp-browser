@@ -48,6 +48,9 @@ struct Measure {
     title: String,
 }
 
+/// Выбор свободного пути под итоговый PDF (обработчик загрузок резервирует имя в каталоге загрузок).
+type ReserveFile = Box<dyn Fn(&str) -> Option<std::path::PathBuf>>;
+
 pub struct PrintJob {
     webview: WebView,
     inbox: Rc<RefCell<Vec<Msg>>>,
@@ -58,7 +61,7 @@ pub struct PrintJob {
     tiles: Vec<(f64, RgbaImage)>,
     truncated: bool,
     out_path: Option<std::path::PathBuf>,
-    reserve: Box<dyn Fn(&str) -> Option<std::path::PathBuf>>,
+    reserve: ReserveFile,
 }
 
 fn json_number(json: &str, key: &str) -> Option<f64> {
@@ -97,10 +100,7 @@ fn json_string(json: &str, key: &str) -> String {
 
 impl PrintJob {
     /// `reserve` — выдаёт свободный путь под PDF по предлагаемому имени (создаёт пустой файл).
-    pub fn start(
-        webview: WebView,
-        reserve: Box<dyn Fn(&str) -> Option<std::path::PathBuf>>,
-    ) -> Self {
+    pub fn start(webview: WebView, reserve: ReserveFile) -> Self {
         let inbox: Rc<RefCell<Vec<Msg>>> = Rc::default();
         let sink = inbox.clone();
         webview.evaluate_javascript(MEASURE_JS, move |result| {
