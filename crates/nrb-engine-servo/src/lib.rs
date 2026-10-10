@@ -343,14 +343,31 @@ impl Snapshotter for ServoSnapshotter {
         let webview = builder.build();
 
         let state = self.state.clone();
-        let completed = self.pump(Some(&webview), deadline, || {
+        let mut completed = self.pump(Some(&webview), deadline, || {
             state.status.get() == Some(LoadStatus::Complete)
         })?;
         let load_time = started.elapsed();
 
-        // Страницы, дорисовывающиеся скриптами: даём движку поработать ещё `settle`.
+        // Страницы, дорисовывающиеся скриптами: даём движку поработать ещё `settle`. Если за это время страница ушла дальше
+        // (скриптовые редиректы: SSO Яндекса — цепочка страниц с `location.replace`/`form.submit()`, у каждой свой `Complete`),
+        // ждём `Complete` уже следующей страницы, а не снимаем промежуточную. Раундов немного: цепочки бесконечными бывают.
         if !req.settle.is_zero() {
-            self.pump(Some(&webview), Instant::now() + req.settle, || false)?;
+            for _ in 0..10 {
+                let url_before = webview.url();
+                self.pump(Some(&webview), Instant::now() + req.settle, || false)?;
+                let moved = webview.url() != url_before
+                    || self.state.status.get() != Some(LoadStatus::Complete);
+                if !moved || Instant::now() >= deadline {
+                    break;
+                }
+                let state = self.state.clone();
+                completed = self.pump(Some(&webview), deadline, || {
+                    state.status.get() == Some(LoadStatus::Complete)
+                })?;
+                if !completed {
+                    break;
+                }
+            }
         }
 
         // Штатный скриншот ждёт «полной готовности» (все картинки, шрифты, отсутствие блокирующих
@@ -358,13 +375,29 @@ impl Snapshotter for ServoSnapshotter {
         // тогда берём то, что уже нарисовано, и помечаем снимок как неполный.
         let mut partial = !completed;
         let mut image = None;
-        if completed {
+        // Пустой кадр у страницы после цепочки скриптовых редиректов (SSO Яндекса: на каждом шаге несколько секунд сети) —
+        // чаще «ещё не дошли», чем «пусто»: даём до трёх дополнительных раундов по 2 с, пока кадр не перестанет быть пустым.
+        for round in 0..4 {
+            if !completed {
+                break;
+            }
+            if round > 0 {
+                if Instant::now() + Duration::from_secs(4) >= deadline {
+                    break;
+                }
+                self.pump(
+                    Some(&webview),
+                    Instant::now() + Duration::from_secs(2),
+                    || false,
+                )?;
+            }
             let sink = self.state.clone();
             webview.take_screenshot(None, move |result| {
                 *sink.screenshot.borrow_mut() = Some(result.map_err(|e| format!("{e:?}")));
             });
             let state = self.state.clone();
             let shot_deadline = Instant::now() + req.timeout.min(Duration::from_secs(15));
+            image = None;
             if self.pump(Some(&webview), shot_deadline, || {
                 state.screenshot.borrow().is_some()
             })? {
@@ -375,6 +408,21 @@ impl Snapshotter for ServoSnapshotter {
                     .take()
                     .expect("checked above")
                     .ok();
+            }
+            let blank = image.as_ref().is_some_and(|img| {
+                let (w, h) = img.dimensions();
+                Frame {
+                    size: Size {
+                        width: w,
+                        height: h,
+                    },
+                    rgba: img.as_raw().clone(),
+                }
+                .dominant_color_ratio()
+                    >= 0.999
+            });
+            if !blank {
+                break;
             }
         }
         let image = match image {

@@ -14,10 +14,6 @@ id = "ebay"
 reason = "антибот-страница «Pardon Our Interruption»"
 
 [[broken]]
-id = "yandex"
-reason = "yandex.ru → dzen.ru → SSO-прослойка sso.passport.yandex.ru: страница с пустым <body>, скрипт строит <form method=POST> на sso.dzen.ru/install и вызывает form.submit(); после цепочки редиректов остаётся пустой кадр без заголовка и без ошибок в консоли. Причина не найдена (подозрение: POST-отправка формы из скрипта, куки Secure/SameSite=None между доменами Яндекса); разбор — в I13"
-
-[[broken]]
 id = "twitch"
 reason = "не дозагружается за 55 с даже в режиме partial; тяжёлое SPA, не исследовано"
 
