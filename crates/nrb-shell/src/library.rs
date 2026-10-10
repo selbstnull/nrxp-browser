@@ -12,6 +12,8 @@ pub enum Panel {
 pub enum LibraryAction {
     Open(String),
     SettingsChanged,
+    /// Запомненные решения о разрешениях изменились (сброс в настройках).
+    PermissionsChanged,
 }
 
 #[derive(Default)]
@@ -55,7 +57,7 @@ impl Library {
         match panel {
             Panel::History => self.history(ctx, store, &mut keep_open, &mut actions),
             Panel::Bookmarks => Self::bookmarks(ctx, store, &mut keep_open, &mut actions),
-            Panel::Settings => Self::settings(ctx, settings, &mut keep_open, &mut actions),
+            Panel::Settings => Self::settings(ctx, store, settings, &mut keep_open, &mut actions),
         }
         if !keep_open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.open = None;
@@ -179,6 +181,7 @@ impl Library {
 
     fn settings(
         ctx: &egui::Context,
+        store: &Store,
         settings: &mut Settings,
         keep_open: &mut bool,
         actions: &mut Vec<LibraryAction>,
@@ -225,6 +228,41 @@ impl Library {
                     "Блокировать сторонние куки (запросы к другому сайту не получают и не ставят куки; вход через сторонние окна может не работать)",
                 )
                 .changed();
+            ui.separator();
+            egui::CollapsingHeader::new("Разрешения сайтов").show(ui, |ui| {
+                match store.permissions() {
+                    Ok(records) if records.is_empty() => {
+                        ui.weak("Ничего не запомнено: в запросе разрешения есть галочка «Запомнить для этого сайта».");
+                    }
+                    Ok(records) => {
+                        let mut forgotten = false;
+                        for record in &records {
+                            ui.horizontal(|ui| {
+                                ui.label(format!(
+                                    "{} — {}: {}",
+                                    record.origin,
+                                    crate::modal::feature_key_label(&record.feature),
+                                    if record.allow { "разрешено" } else { "запрещено" }
+                                ));
+                                if ui.small_button("Сбросить").clicked() {
+                                    let _ = store.forget_permission(&record.origin, &record.feature);
+                                    forgotten = true;
+                                }
+                            });
+                        }
+                        if ui.button("Сбросить все").clicked() {
+                            let _ = store.clear_permissions();
+                            forgotten = true;
+                        }
+                        if forgotten {
+                            actions.push(LibraryAction::PermissionsChanged);
+                        }
+                    }
+                    Err(error) => {
+                        ui.colored_label(egui::Color32::LIGHT_RED, format!("Не удалось прочитать разрешения: {error}"));
+                    }
+                }
+            });
             ui.separator();
             ui.weak("Настройки сохраняются в settings.toml в каталоге профиля. Поисковая система и тема применяются сразу.");
             if changed {

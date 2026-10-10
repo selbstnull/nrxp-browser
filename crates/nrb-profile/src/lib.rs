@@ -5,7 +5,7 @@ mod settings;
 mod store;
 
 pub use settings::{SEARCH_ENGINES, Settings, Theme};
-pub use store::{Bookmark, HistoryEntry, SessionState, Store, TabState};
+pub use store::{Bookmark, HistoryEntry, PermissionRecord, SessionState, Store, TabState};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

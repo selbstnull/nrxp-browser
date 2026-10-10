@@ -22,6 +22,12 @@ pub enum Modal {
         origin: String,
         feature: PermissionFeature,
         request: Option<PermissionRequest>,
+        /// Ключ для запоминания (`схема://хост:порт`, ключ возможности); `None` — запомнить нельзя (страница без адреса).
+        key: Option<(String, String)>,
+        /// Галочка «Запомнить для этого сайта».
+        remember: bool,
+        /// Решение пользователя; после закрытия окна оболочка сохраняет его, если стояла галочка.
+        decision: Option<bool>,
     },
     Auth {
         url: String,
@@ -40,6 +46,45 @@ pub enum Modal {
         menu: Option<ContextMenu>,
         anchor: egui::Pos2,
     },
+}
+
+/// Стабильный ключ возможности для хранения решений (не зависит от подписей и порядка перечисления).
+pub fn feature_key(feature: PermissionFeature) -> &'static str {
+    match feature {
+        PermissionFeature::Geolocation => "geolocation",
+        PermissionFeature::Notifications => "notifications",
+        PermissionFeature::Push => "push",
+        PermissionFeature::Midi => "midi",
+        PermissionFeature::Camera => "camera",
+        PermissionFeature::Microphone => "microphone",
+        PermissionFeature::Speaker => "speaker",
+        PermissionFeature::DeviceInfo => "device-info",
+        PermissionFeature::BackgroundSync => "background-sync",
+        PermissionFeature::Bluetooth => "bluetooth",
+        PermissionFeature::PersistentStorage => "persistent-storage",
+        PermissionFeature::ScreenWakeLock(_) => "screen-wake-lock",
+        PermissionFeature::Gamepad => "gamepad",
+    }
+}
+
+/// Подпись ключа возможности для списка запомненных решений.
+pub fn feature_key_label(key: &str) -> &str {
+    match key {
+        "geolocation" => "местоположение",
+        "notifications" => "уведомления",
+        "push" => "push-сообщения",
+        "midi" => "MIDI",
+        "camera" => "камера",
+        "microphone" => "микрофон",
+        "speaker" => "вывод звука",
+        "device-info" => "сведения об устройстве",
+        "background-sync" => "фоновая синхронизация",
+        "bluetooth" => "Bluetooth",
+        "persistent-storage" => "постоянное хранилище",
+        "screen-wake-lock" => "не гасить экран",
+        "gamepad" => "геймпады",
+        other => other,
+    }
 }
 
 pub fn feature_name(feature: PermissionFeature) -> String {
@@ -139,6 +184,9 @@ pub fn show(ctx: &egui::Context, modal: &mut Modal) -> bool {
             origin,
             feature,
             request,
+            key,
+            remember,
+            decision,
         } => {
             let (mut allow, mut deny) = (false, escape);
             egui::Window::new("Запрос разрешения")
@@ -147,6 +195,9 @@ pub fn show(ctx: &egui::Context, modal: &mut Modal) -> bool {
                 .anchor(egui::Align2::CENTER_TOP, [0.0, 90.0])
                 .show(ctx, |ui| {
                     ui.label(format!("Сайт {origin} хочет {}.", feature_name(*feature)));
+                    if key.is_some() {
+                        ui.checkbox(remember, "Запомнить для этого сайта");
+                    }
                     ui.horizontal(|ui| {
                         if ui.button("Разрешить").clicked() {
                             allow = true;
@@ -157,6 +208,8 @@ pub fn show(ctx: &egui::Context, modal: &mut Modal) -> bool {
                     });
                 });
             if allow || deny {
+                // Escape — отказ «на этот раз»: запоминать отказ, которого пользователь не выбирал, нельзя.
+                *decision = (allow || !escape).then_some(allow);
                 if let Some(request) = request.take() {
                     if allow {
                         request.allow();

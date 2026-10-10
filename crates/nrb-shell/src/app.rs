@@ -32,7 +32,7 @@ use crate::downloads::{
 use crate::find::{self, FindAction, FindBar};
 use crate::keys;
 use crate::library::{Library, LibraryAction, Panel};
-use crate::modal::{self, Modal};
+use crate::modal::{self, Modal, feature_key};
 use crate::nodes::{NodeManager, NodesWindow};
 use crate::print::{PrintJob, Progress};
 use crate::site_data::SiteDataWindow;
@@ -133,6 +133,19 @@ struct Shared {
     download_requests: RefCell<Vec<(Url, Option<Url>)>>,
     /// Загрузки, принятые у движка (N3b): описание и поток тела; передаются обработчику из главного цикла.
     engine_downloads: RefCell<Vec<(IncomingDownload, DownloadStream)>>,
+    /// Запомненные решения о разрешениях: (источник, ключ возможности) → разрешено. Копия таблицы профиля для делегата.
+    permissions: RefCell<std::collections::HashMap<(String, String), bool>>,
+}
+
+fn load_permissions(
+    store: &nrb_profile::Store,
+) -> std::collections::HashMap<(String, String), bool> {
+    store
+        .permissions()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| ((p.origin, p.feature), p.allow))
+        .collect()
 }
 
 /// Политика сторонних куки живёт в настройках движка и читается сетевым потоком на каждый запрос — меняется на лету.
@@ -272,12 +285,35 @@ impl WebViewDelegate for Delegate {
     fn request_permission(&self, webview: WebView, request: PermissionRequest) {
         let origin = origin_of(&webview);
         let feature = request.feature();
+        // Ключ запоминания — полный источник с портом (`localhost:3000` и `localhost:8080` — разные сайты).
+        let key = webview
+            .url()
+            .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+            .map(|url| {
+                (
+                    url.origin().ascii_serialization(),
+                    feature_key(feature).to_owned(),
+                )
+            });
+        if let Some(key) = &key
+            && let Some(&allow) = self.0.permissions.borrow().get(key)
+        {
+            if allow {
+                request.allow();
+            } else {
+                request.deny();
+            }
+            return;
+        }
         self.0.modals.borrow_mut().push((
             None,
             Modal::Permission {
                 origin,
                 feature,
                 request: Some(request),
+                key,
+                remember: false,
+                decision: None,
             },
         ));
         self.0.redraw();
@@ -590,6 +626,7 @@ impl Running {
             downloads_enabled: Cell::new(config.downloads.is_some()),
             download_requests: RefCell::default(),
             engine_downloads: RefCell::default(),
+            permissions: RefCell::default(),
             completed: RefCell::default(),
             titled: RefCell::default(),
         });
@@ -615,6 +652,7 @@ impl Running {
         };
         shared.adblock_on.set(settings.adblock);
         apply_cookie_policy(&settings);
+        *shared.permissions.borrow_mut() = load_permissions(&store);
         egui_ctx.set_visuals(match settings.theme {
             nrb_profile::Theme::Dark => egui::Visuals::dark(),
             nrb_profile::Theme::Light => egui::Visuals::light(),
@@ -1025,6 +1063,11 @@ impl Running {
             }
         }
         self.toolbar.suggestions.truncate(6);
+    }
+
+    /// Перечитывает запомненные решения из профиля (после сброса в настройках).
+    fn reload_permissions(&mut self) {
+        *self.shared.permissions.borrow_mut() = load_permissions(&self.store);
     }
 
     fn apply_settings(&mut self) {
@@ -1486,6 +1529,7 @@ impl Running {
             match action {
                 LibraryAction::Open(url) => self.navigate(&url),
                 LibraryAction::SettingsChanged => self.apply_settings(),
+                LibraryAction::PermissionsChanged => self.reload_permissions(),
             }
         }
         for action in find_actions {
@@ -1513,6 +1557,24 @@ impl Running {
             self.exit = true;
         }
         if modal_done {
+            if let Some((
+                _,
+                Modal::Permission {
+                    key: Some(key),
+                    remember: true,
+                    decision: Some(allow),
+                    ..
+                },
+            )) = self.modals.front()
+            {
+                if let Err(error) = self.store.set_permission(&key.0, &key.1, *allow) {
+                    tracing::warn!("не удалось сохранить решение о разрешении: {error}");
+                }
+                self.shared
+                    .permissions
+                    .borrow_mut()
+                    .insert(key.clone(), *allow);
+            }
             self.modals.pop_front();
             self.window.request_redraw();
         }

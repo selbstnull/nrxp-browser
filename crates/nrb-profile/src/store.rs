@@ -23,6 +23,15 @@ pub struct Bookmark {
     pub created: i64,
 }
 
+/// Запомненное решение о разрешении: `origin` — `схема://хост:порт`, `feature` — стабильный ключ возможности.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionRecord {
+    pub origin: String,
+    pub feature: String,
+    pub allow: bool,
+    pub created: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TabState {
     pub url: String,
@@ -72,7 +81,10 @@ impl Store {
                  visits INTEGER NOT NULL DEFAULT 1, last_visit INTEGER NOT NULL);
              CREATE INDEX IF NOT EXISTS history_last ON history(last_visit DESC);
              CREATE TABLE IF NOT EXISTS bookmarks (
-                 url TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL);",
+                 url TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS permissions (
+                 origin TEXT NOT NULL, feature TEXT NOT NULL, allow INTEGER NOT NULL, created INTEGER NOT NULL,
+                 PRIMARY KEY (origin, feature));",
         )?;
         Ok(Self {
             conn,
@@ -154,6 +166,46 @@ impl Store {
 
     pub fn clear_history(&self) -> Result<()> {
         self.conn.execute("DELETE FROM history", [])?;
+        Ok(())
+    }
+
+    // ---- разрешения сайтов ----
+
+    /// Запомнить решение (заменяет прежнее для той же пары).
+    pub fn set_permission(&self, origin: &str, feature: &str, allow: bool) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO permissions (origin, feature, allow, created) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(origin, feature) DO UPDATE SET allow = ?3, created = ?4",
+            params![origin, feature, allow, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn permissions(&self) -> Result<Vec<PermissionRecord>> {
+        let mut statement = self.conn.prepare(
+            "SELECT origin, feature, allow, created FROM permissions ORDER BY origin, feature",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(PermissionRecord {
+                origin: row.get(0)?,
+                feature: row.get(1)?,
+                allow: row.get(2)?,
+                created: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn forget_permission(&self, origin: &str, feature: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM permissions WHERE origin = ?1 AND feature = ?2",
+            params![origin, feature],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_permissions(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM permissions", [])?;
         Ok(())
     }
 
@@ -310,6 +362,45 @@ mod tests {
         assert_eq!(store.recent_history(10).unwrap().len(), 1);
         store.clear_history().unwrap();
         assert!(store.recent_history(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn permissions_are_remembered_replaced_and_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = Store::open(dir.path()).unwrap();
+            store
+                .set_permission("https://a.test", "geolocation", true)
+                .unwrap();
+            store
+                .set_permission("https://a.test", "camera", false)
+                .unwrap();
+            store
+                .set_permission("https://a.test", "geolocation", false)
+                .unwrap();
+            store
+                .set_permission("http://a.test:8080", "geolocation", true)
+                .unwrap();
+        }
+        // Survives a reopen.
+        let store = Store::open(dir.path()).unwrap();
+        let all = store.permissions().unwrap();
+        let view: Vec<_> = all
+            .iter()
+            .map(|p| (p.origin.as_str(), p.feature.as_str(), p.allow))
+            .collect();
+        assert_eq!(
+            view,
+            [
+                ("http://a.test:8080", "geolocation", true),
+                ("https://a.test", "camera", false),
+                ("https://a.test", "geolocation", false),
+            ]
+        );
+        store.forget_permission("https://a.test", "camera").unwrap();
+        assert_eq!(store.permissions().unwrap().len(), 2);
+        store.clear_permissions().unwrap();
+        assert!(store.permissions().unwrap().is_empty());
     }
 
     #[test]
