@@ -1,0 +1,383 @@
+# Выпуск релиза браузера — ТОЛЬКО ВРУЧНУЮ (Actions → release → Run workflow). Собирает пакеты под выбранные ОС, считает SHA256SUMS,
+# строит и (при наличии секрета) подписывает манифест обновлений (`nrb release manifest/sign`) и создаёт GitHub Release.
+#
+# ВНИМАНИЕ: файл написан в Linux-окружении и НЕ запускался. Сборка с движком под Windows и macOS ещё нигде не проверена — первые
+# прогоны этих джоб наверняка потребуют правок; поэтому релиз по умолчанию создаётся ЧЕРНОВИКОМ и пре-релизом: сначала смотрите
+# артефакты, потом публикуйте. Android-APK подписан отладочным ключом (не для магазина).
+#
+# Что нужно в репозитории:
+#   • переменные/секреты — по желанию: секрет RELEASE_SIGNING_KEY (содержимое update.key в base64: `base64 -w0 update.key`) — без него
+#     манифест создаётся без подписи, а в описании релиза стоит предупреждение;
+#   • форк движка nrxp-servo (вход servo_repo) и ядро selbstnull/netrunner-core — публичные, токены не нужны.
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия без «v», например 0.1.0 (тег будет v0.1.0)"
+        required: true
+        type: string
+      notes:
+        description: "Описание релиза (Markdown)"
+        required: false
+        default: ""
+        type: string
+      draft:
+        description: "Создать черновик (рекомендуется: проверить артефакты перед публикацией)"
+        required: false
+        default: true
+        type: boolean
+      prerelease:
+        description: "Пометить как пре-релиз"
+        required: false
+        default: true
+        type: boolean
+      linux:
+        description: "Linux x86_64: tar.gz и .deb (с видео через GStreamer)"
+        required: false
+        default: true
+        type: boolean
+      node:
+        description: "Узел без движка: статический musl-бинарь (Linux x86_64)"
+        required: false
+        default: true
+        type: boolean
+      windows:
+        description: "Windows x86_64: zip (сборка не проверялась)"
+        required: false
+        default: true
+        type: boolean
+      macos:
+        description: "macOS arm64: dmg (сборка не проверялась, без нотаризации)"
+        required: false
+        default: true
+        type: boolean
+      android:
+        description: "Android arm64: APK (отладочная подпись; очень долго)"
+        required: false
+        default: false
+        type: boolean
+      servo_repo:
+        description: "Форк Servo (владелец/репозиторий или URL)"
+        required: false
+        default: "selbstnull/nrxp-servo"
+        type: string
+      servo_ref:
+        description: "Ветка/тег форка Servo"
+        required: false
+        default: "nrxp/0.7"
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: "проверка версии"
+        shell: bash
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+            echo "Версия «$VERSION» не похожа на semver (0.1.0, 0.2.0-rc.1)" >&2; exit 1
+          fi
+      - name: "тег v${{ inputs.version }} ещё не занят"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "Тег v$VERSION уже существует — выберите другую версию (или удалите тег/релиз)" >&2; exit 1
+          fi
+
+  linux:
+    if: ${{ inputs.linux }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: netrunner-browser }
+      - uses: actions/checkout@v4
+        with: { repository: selbstnull/netrunner-core, path: netrunner-proxy }
+      - name: "форк Servo"
+        shell: bash
+        env: { SERVO_REPO: "${{ inputs.servo_repo }}", SERVO_REF: "${{ inputs.servo_ref }}" }
+        run: |
+          case "$SERVO_REPO" in http*|git@*) url="$SERVO_REPO" ;; *) url="https://github.com/$SERVO_REPO.git" ;; esac
+          git clone --depth 1 --branch "$SERVO_REF" "$url" nrxp-servo
+      - uses: dtolnay/rust-toolchain@stable
+      - name: "системные пакеты"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libclang-dev llvm-dev libfontconfig1-dev libfreetype-dev libunwind-dev libudev-dev \
+            libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgles2-mesa-dev libssl-dev libdbus-1-dev \
+            libvulkan-dev dpkg-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev
+      - name: "подготовка"
+        shell: bash
+        working-directory: netrunner-browser
+        run: scripts/setup-upstream.sh
+      - name: "сборка release (движок + видео)"
+        working-directory: netrunner-browser
+        env: { CARGO_TARGET_DIR: target-release }
+        run: cargo build --release -p nrb --features media
+      - name: "самопроверка запуска"
+        working-directory: netrunner-browser
+        run: target-release/release/nrb version
+      - name: "пакеты (tar.gz, deb)"
+        working-directory: netrunner-browser
+        run: scripts/package.sh "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-linux
+          path: |
+            netrunner-browser/dist/nrb-*.tar.gz
+            netrunner-browser/dist/nrb_*.deb
+          if-no-files-found: error
+
+  node:
+    if: ${{ inputs.node }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: netrunner-browser }
+      - uses: actions/checkout@v4
+        with: { repository: selbstnull/netrunner-core, path: netrunner-proxy }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: x86_64-unknown-linux-musl }
+      - name: "системные пакеты"
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: "подготовка"
+        working-directory: netrunner-browser
+        env: { NRB_NO_SERVO: "1" }
+        run: scripts/setup-upstream.sh
+      - name: "статический узел"
+        working-directory: netrunner-browser
+        run: scripts/build-node-musl.sh
+      - name: "упаковка"
+        shell: bash
+        working-directory: netrunner-browser
+        run: |
+          mkdir -p dist
+          cp target-release/x86_64-unknown-linux-musl/release/nrb "dist/nrb-node-$VERSION-linux-x86_64-musl"
+          chmod +x "dist/nrb-node-$VERSION-linux-x86_64-musl"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-node
+          path: netrunner-browser/dist/nrb-node-*
+          if-no-files-found: error
+
+  windows:
+    if: ${{ inputs.windows }}
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: netrunner-browser }
+      - uses: actions/checkout@v4
+        with: { repository: selbstnull/netrunner-core, path: netrunner-proxy }
+      - name: "форк Servo"
+        shell: bash
+        env: { SERVO_REPO: "${{ inputs.servo_repo }}", SERVO_REF: "${{ inputs.servo_ref }}" }
+        run: |
+          case "$SERVO_REPO" in http*|git@*) url="$SERVO_REPO" ;; *) url="https://github.com/$SERVO_REPO.git" ;; esac
+          git clone --depth 1 --branch "$SERVO_REF" "$url" nrxp-servo
+      - uses: dtolnay/rust-toolchain@stable
+      - name: "инструменты сборки Servo (LLVM, NASM, Python, CMake)"
+        shell: pwsh
+        run: choco install -y llvm nasm python3 cmake
+      - name: "подготовка"
+        shell: bash
+        working-directory: netrunner-browser
+        run: scripts/setup-upstream.sh
+      - name: "сборка release (движок; без видео)"
+        working-directory: netrunner-browser
+        run: cargo build --release -p nrb --features servo
+      - name: "упаковка (zip)"
+        shell: pwsh
+        working-directory: netrunner-browser
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $dir = "dist/nrb-$env:VERSION-windows-x86_64"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item target/release/nrb.exe $dir/
+          Copy-Item README.md $dir/
+          Compress-Archive -Path $dir -DestinationPath "dist/nrb-$env:VERSION-windows-x86_64.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-windows
+          path: netrunner-browser/dist/*.zip
+          if-no-files-found: error
+
+  macos:
+    if: ${{ inputs.macos }}
+    needs: prepare
+    runs-on: macos-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: netrunner-browser }
+      - uses: actions/checkout@v4
+        with: { repository: selbstnull/netrunner-core, path: netrunner-proxy }
+      - name: "форк Servo"
+        shell: bash
+        env: { SERVO_REPO: "${{ inputs.servo_repo }}", SERVO_REF: "${{ inputs.servo_ref }}" }
+        run: |
+          case "$SERVO_REPO" in http*|git@*) url="$SERVO_REPO" ;; *) url="https://github.com/$SERVO_REPO.git" ;; esac
+          git clone --depth 1 --branch "$SERVO_REF" "$url" nrxp-servo
+      - uses: dtolnay/rust-toolchain@stable
+      - name: "инструменты сборки Servo"
+        run: brew install cmake python@3.12 pkg-config
+      - name: "подготовка"
+        working-directory: netrunner-browser
+        run: scripts/setup-upstream.sh
+      - name: "сборка release (движок; без видео)"
+        working-directory: netrunner-browser
+        run: cargo build --release -p nrb --features servo
+      - name: "приложение .app и dmg"
+        working-directory: netrunner-browser
+        run: |
+          mkdir -p dist/nrb.app/Contents/MacOS
+          cp target/release/nrb dist/nrb.app/Contents/MacOS/nrb
+          cat > dist/nrb.app/Contents/Info.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>nrb</string>
+            <key>CFBundleIdentifier</key><string>org.netrunner.browser</string>
+            <key>CFBundleExecutable</key><string>nrb</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+          # Ad-hoc подпись: без неё arm64-бинарь не запустится. Нотаризации нет — при первом запуске macOS спросит подтверждение.
+          codesign --force --deep -s - dist/nrb.app
+          hdiutil create -volname nrb -srcfolder dist/nrb.app -ov -format UDZO "dist/nrb-$VERSION-macos-arm64.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-macos
+          path: netrunner-browser/dist/*.dmg
+          if-no-files-found: error
+
+  android:
+    if: ${{ inputs.android }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: netrunner-browser }
+      - uses: actions/checkout@v4
+        with: { repository: selbstnull/netrunner-core, path: netrunner-proxy }
+      - name: "форк Servo"
+        shell: bash
+        env: { SERVO_REPO: "${{ inputs.servo_repo }}", SERVO_REF: "${{ inputs.servo_ref }}" }
+        run: |
+          case "$SERVO_REPO" in http*|git@*) url="$SERVO_REPO" ;; *) url="https://github.com/$SERVO_REPO.git" ;; esac
+          git clone --depth 1 --branch "$SERVO_REF" "$url" nrxp-servo
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: aarch64-linux-android }
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with: { ndk-version: r27 }
+      - name: "cargo-ndk и системные пакеты"
+        run: |
+          cargo install cargo-ndk --locked
+          sudo apt-get update && sudo apt-get install -y clang cmake libclang-dev
+      - name: "подготовка"
+        working-directory: netrunner-browser
+        run: scripts/setup-upstream.sh
+      - name: "APK (release, отладочная подпись)"
+        working-directory: netrunner-browser
+        run: |
+          # Путь к NDK даёт setup-ndk; SDK (build-tools, platforms) — предустановленный на раннере.
+          export ANDROID_NDK_HOME="${{ steps.ndk.outputs.ndk-path }}"
+          export ANDROID_HOME="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          scripts/build-android.sh --release
+          mkdir -p dist && cp target/android/nrb-release.apk "dist/nrb-$VERSION-android-arm64.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-android
+          path: netrunner-browser/dist/*.apk
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, linux, node, windows, macos, android]
+    # Выпускаем, если ни одна из ВЫБРАННЫХ джоб не упала (пропущенные — нормально).
+    if: ${{ always() && needs.prepare.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: netrunner-browser }
+      - uses: actions/checkout@v4
+        with: { repository: selbstnull/netrunner-core, path: netrunner-proxy }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: pkg-*
+          merge-multiple: true
+      - name: "артефакты"
+        shell: bash
+        run: |
+          ls -la artifacts
+          test -n "$(ls artifacts)" || { echo "Нет ни одного артефакта: включите хотя бы одну платформу" >&2; exit 1; }
+      - name: "подготовка и инструмент nrb (без движка) для манифеста"
+        shell: bash
+        working-directory: netrunner-browser
+        env: { NRB_NO_SERVO: "1" }
+        run: |
+          scripts/setup-upstream.sh
+          cargo build --release -p nrb
+      - name: "SHA256SUMS и манифест обновлений"
+        shell: bash
+        env:
+          SIGNING_KEY_B64: ${{ secrets.RELEASE_SIGNING_KEY }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          NRB="$GITHUB_WORKSPACE/netrunner-browser/target/release/nrb"
+          BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/"
+          args=(); for f in $(ls | grep -v -e SHA256SUMS -e manifest); do args+=(--artifact "$f"); done
+          "$NRB" release manifest --version "$VERSION" --channel stable --notes "$NOTES" --base-url "$BASE" "${args[@]}" -o manifest.json
+          if [ -n "${SIGNING_KEY_B64:-}" ]; then
+            umask 077; printf '%s' "$SIGNING_KEY_B64" | base64 -d > "$RUNNER_TEMP/update.key"
+            "$NRB" release sign --key "$RUNNER_TEMP/update.key" manifest.json
+            rm -f "$RUNNER_TEMP/update.key"
+            echo "SIGNED=1" >> "$GITHUB_ENV"
+          else
+            echo "SIGNED=0" >> "$GITHUB_ENV"
+            echo "::warning::секрет RELEASE_SIGNING_KEY не задан — манифест не подписан, автообновление такому релизу верить не будет"
+          fi
+          ls -la
+      - name: "GitHub Release"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          flags=(); [ "${{ inputs.draft }}" = "true" ] && flags+=(--draft); [ "${{ inputs.prerelease }}" = "true" ] && flags+=(--prerelease)
+          {
+            [ -n "${NOTES:-}" ] && printf '%s\n\n' "$NOTES"
+            echo "Сырой проект: код написан ИИ-ассистентом и не проходил ревью живым человеком. Не использовать в проде."
+            echo
+            [ "${SIGNED:-0}" = 1 ] && echo "Манифест обновлений подписан (manifest.json + manifest.json.sig)." || echo "⚠️ Манифест обновлений НЕ подписан."
+            echo; echo "Контрольные суммы — в SHA256SUMS."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" artifacts/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "nrb $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"

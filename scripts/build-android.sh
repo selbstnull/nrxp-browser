@@ -8,8 +8,11 @@ cd "$(dirname "$0")/.."
 . scripts/android-env.sh
 PROFILE=debug; CARGO_FLAGS=""; INSTALL=0
 for a in "$@"; do case "$a" in --release) PROFILE=release; CARGO_FLAGS="--release";; --install) INSTALL=1;; esac; done
-BT="$ANDROID_HOME/build-tools/${BUILD_TOOLS:-35.0.0}"
-JAR="$ANDROID_HOME/platforms/${PLATFORM:-android-36}/android.jar"
+# Версии build-tools и платформы: заданные явно, иначе самые новые из установленных (на раннерах CI набор другой, чем у разработчика).
+BT_VER="${BUILD_TOOLS:-$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)}"
+PLAT="${PLATFORM:-$(ls "$ANDROID_HOME/platforms" | sort -V | tail -1)}"
+BT="$ANDROID_HOME/build-tools/$BT_VER"
+JAR="$ANDROID_HOME/platforms/$PLAT/android.jar"
 OUT=target/android; STAGE="$OUT/stage"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
 
