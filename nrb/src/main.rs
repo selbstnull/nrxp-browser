@@ -187,6 +187,11 @@ enum Command {
 }
 
 fn main() {
+    // Контент-процесс Servo (мультипроцесс): тот же бинарь с `--content-process <токен>`; ни логирования, ни разбора аргументов.
+    #[cfg(feature = "servo")]
+    if nrb_engine_servo::run_content_process_if_requested() {
+        return;
+    }
     // До потоков: пространство имён пользователя можно создать только в однопоточном процессе.
     hermetic::early_init();
     tracing_subscriber::fmt()

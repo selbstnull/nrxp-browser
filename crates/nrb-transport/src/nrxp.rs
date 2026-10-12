@@ -18,7 +18,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 use tokio_util::sync::PollSender;
 
-use crate::{BoxStream, Caps, NodeConfig, Transport};
+use crate::{BoxDatagramFlow, BoxStream, Caps, DatagramFlow, NodeConfig, Transport};
 
 /// Максимальный payload одного кадра: поле длины RawCast — `u16`, берём с запасом, как это делает ядро.
 const WRITE_CHUNK: usize = 16 * 1024;
@@ -200,6 +200,36 @@ impl Transport for NrxpTransport {
         }))
     }
 
+    async fn open_udp(&self, host: &str, port: u16) -> io::Result<BoxDatagramFlow> {
+        if self.muxer.active_legs_count() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "туннель недоступен: нет активных ног",
+            ));
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        self.streams.insert(id, events_tx);
+
+        // Как и у TCP, имя хоста уходит в payload как есть; у UDP нет кредитов — сразу готово к обмену.
+        let mut connect =
+            RawCastFrame::connect(LocalProtocol::Udp, id, Ipv4Addr::UNSPECIFIED, port);
+        connect.payload = Bytes::from(format!("{host}:{port}"));
+        if self.to_tunnel.send(connect).await.is_err() {
+            self.streams.remove(&id);
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "туннель закрыт"));
+        }
+        Ok(Box::new(NrxpDatagrams {
+            id,
+            port,
+            to_tunnel: self.to_tunnel.clone(),
+            events: tokio::sync::Mutex::new(events_rx),
+            registry: self.streams.clone(),
+            // Потолок датаграммной ноги ядра (`MAX_DATAGRAM_LEG_PAYLOAD`) минус заголовки кадра и AEAD — с запасом.
+            max_payload: 1100,
+        }))
+    }
+
     fn caps(&self) -> Caps {
         Caps {
             native_datagram_leg: self.muxer.datagram_leg_stats().is_some(),
@@ -346,6 +376,73 @@ impl Drop for NrxpStream {
                     });
                 }
             }
+        }
+    }
+}
+
+/// UDP-поток NRXP (`UdpConnect` + `UdpData`). Потерянная датаграмма — штатная ситуация, поэтому переполнение очереди
+/// в туннель не считается ошибкой.
+pub struct NrxpDatagrams {
+    id: u64,
+    port: u16,
+    to_tunnel: mpsc::Sender<RawCastFrame>,
+    events: tokio::sync::Mutex<mpsc::UnboundedReceiver<Event>>,
+    registry: Registry,
+    max_payload: usize,
+}
+
+#[async_trait]
+impl DatagramFlow for NrxpDatagrams {
+    fn send(&self, payload: &[u8]) -> io::Result<()> {
+        if payload.len() > self.max_payload {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "датаграмма больше потолка ноги",
+            ));
+        }
+        let frame = RawCastFrame::data(
+            LocalProtocol::Udp,
+            self.id,
+            Ipv4Addr::UNSPECIFIED,
+            self.port,
+            Bytes::copy_from_slice(payload),
+        );
+        match self.to_tunnel.try_send(frame) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(io::Error::from(io::ErrorKind::BrokenPipe))
+            }
+        }
+    }
+
+    async fn recv(&self) -> io::Result<Bytes> {
+        match self.events.lock().await.recv().await {
+            Some(Event::Data(bytes)) => Ok(bytes),
+            Some(Event::Close) | None => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
+        }
+    }
+
+    fn max_payload(&self) -> usize {
+        self.max_payload
+    }
+}
+
+impl Drop for NrxpDatagrams {
+    fn drop(&mut self) {
+        self.registry.remove(&self.id);
+        let close = RawCastFrame::close(
+            LocalProtocol::Udp,
+            self.id,
+            Ipv4Addr::UNSPECIFIED,
+            self.port,
+        );
+        if let Err(mpsc::error::TrySendError::Full(close)) = self.to_tunnel.try_send(close)
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            let control = self.to_tunnel.clone();
+            runtime.spawn(async move {
+                let _ = control.send(close).await;
+            });
         }
     }
 }

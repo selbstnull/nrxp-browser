@@ -177,8 +177,33 @@ pub fn build_opts(config: &ServoConfig) -> servo::Opts {
         // (`./bottles/…` — мусор в каталоге запуска).
         config_dir: config.profile_dir.clone().or_else(|| ephemeral_dir().ok()),
         temporary_storage: config.profile_dir.is_none(),
+        // Мультипроцесс (фича `multiprocess`): `NRB_MULTIPROCESS=1`, песочница контент-процессов — `NRB_SANDBOX=1`.
+        multiprocess: cfg!(feature = "multiprocess") && env_flag("NRB_MULTIPROCESS"),
+        sandbox: cfg!(feature = "multiprocess")
+            && env_flag("NRB_MULTIPROCESS")
+            && env_flag("NRB_SANDBOX"),
         ..servo::Opts::default()
     }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| v == "1")
+}
+
+/// Точка входа контент-процесса: Servo запускает его как `<наш бинарь> --content-process <токен>`. Возвращает `true`, если
+/// процесс был контентным и уже отработал (вызывающий должен сразу выйти). Звать первым делом в `main`.
+pub fn run_content_process_if_requested() -> bool {
+    #[cfg(feature = "multiprocess")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(at) = args.iter().position(|a| a == "--content-process")
+            && let Some(token) = args.get(at + 1)
+        {
+            servo::run_content_process(token.clone());
+            return true;
+        }
+    }
+    false
 }
 
 /// Каталог временных данных процесса: `<tmp>/nrb-ephemeral-<pid>`, права 0700. Убирается [`cleanup_ephemeral`];

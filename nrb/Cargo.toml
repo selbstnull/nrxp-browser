@@ -12,6 +12,8 @@ default = []
 servo = ["dep:nrb-engine-servo", "dep:nrb-shell"]
 # <video>/<audio> через системный GStreamer (см. nrb-engine-servo).
 media = ["servo", "nrb-engine-servo/media"]
+# Страницы в отдельных процессах (NRB_MULTIPROCESS=1, песочница NRB_SANDBOX=1); экспериментально.
+multiprocess = ["servo", "nrb-engine-servo/multiprocess"]
 
 [dependencies]
 anyhow.workspace = true

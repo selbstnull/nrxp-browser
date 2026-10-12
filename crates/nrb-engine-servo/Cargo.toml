@@ -11,6 +11,9 @@ default = []
 # Воспроизведение <video>/<audio> через системный GStreamer (нужны libgstreamer1.0-dev, libgstreamer-plugins-base1.0-dev,
 # libgstreamer-plugins-bad1.0-dev при сборке и gstreamer1.0-plugins-good/-libav при запуске). Без неё медиа не играет.
 media = ["servo/media-gstreamer"]
+# Страницы в отдельных процессах (контент-процессы запускаются тем же бинарём с `--content-process <токен>`, см. `run_content_process`) и, по
+# желанию, в песочнице (`NRB_SANDBOX=1`). Экспериментально: в Servo 0.7 режим помечен как неполный.
+multiprocess = ["servo/multiprocess"]
 
 [dependencies]
 nrb-engine = { path = "../nrb-engine" }
