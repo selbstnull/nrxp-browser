@@ -32,6 +32,8 @@ pub struct ToolbarState {
     pub notice: Option<String>,
     /// Текущая страница в закладках (звезда закрашена).
     pub bookmarked: bool,
+    /// На странице есть форма с паролем и менеджер паролей доступен — показываем кнопку подстановки.
+    pub login_form: bool,
     /// Подсказки адресной строки: `(адрес, заголовок)`.
     pub suggestions: Vec<(String, String)>,
     /// Показывается ли список подсказок (пользователь печатает в адресной строке).
@@ -51,6 +53,10 @@ pub enum Action {
     SelectTab(usize),
     /// Включить/выключить звук вкладки (значок динамика).
     ToggleMute(usize),
+    /// Окно «Пароли» (Ctrl+Shift+P).
+    OpenPasswords,
+    /// Подставить сохранённый вход в форму страницы (Ctrl+Shift+L).
+    FillPassword,
     ToggleBookmark,
     OpenHistory,
     OpenBookmarks,
@@ -319,6 +325,10 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
                         actions.push(Action::OpenDownloads);
                         ui.close();
                     }
+                    if ui.button("Пароли            Ctrl+Shift+P").clicked() {
+                        actions.push(Action::OpenPasswords);
+                        ui.close();
+                    }
                     ui.separator();
                     if ui.button("Масштаб +         Ctrl+=").clicked() {
                         actions.push(Action::ZoomIn);
@@ -331,6 +341,14 @@ pub fn toolbar(ui: &mut egui::Ui, tabs: &[TabInfo], state: &mut ToolbarState) ->
                         ui.close();
                     }
                 });
+                if state.login_form
+                    && ui
+                        .small_button("Пароль")
+                        .on_hover_text("Подставить сохранённый вход (Ctrl+Shift+L)")
+                        .clicked()
+                {
+                    actions.push(Action::FillPassword);
+                }
                 if star(ui, state.bookmarked)
                     .on_hover_text("Добавить в закладки / убрать (Ctrl+D)")
                     .clicked()

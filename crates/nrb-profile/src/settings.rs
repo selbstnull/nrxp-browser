@@ -35,6 +35,8 @@ pub struct Settings {
     pub autoplay_with_sound: bool,
     /// WebRTC (звонки, каналы данных) — только relay через TURN по TCP, через туннель. По умолчанию выключен.
     pub webrtc: bool,
+    /// Менеджер паролей: предлагать сохранить введённые пароли и подставлять их по команде (в приватном сеансе недоступен).
+    pub passwords: bool,
 }
 
 impl Default for Settings {
@@ -50,6 +52,7 @@ impl Default for Settings {
             block_third_party_cookies: false,
             autoplay_with_sound: false,
             webrtc: false,
+            passwords: true,
         }
     }
 }

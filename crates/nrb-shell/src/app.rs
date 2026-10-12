@@ -37,6 +37,7 @@ use crate::keys;
 use crate::library::{Library, LibraryAction, Panel};
 use crate::modal::{self, Modal, feature_key};
 use crate::nodes::{NodeManager, NodesWindow};
+use crate::passwords::{self, Effect as PwEffect, Passwords};
 use crate::print::{PrintJob, Progress};
 use crate::site_data::SiteDataWindow;
 use crate::ui::{self, Action, TabAudioState, TabInfo, ToolbarState};
@@ -175,6 +176,9 @@ fn load_permissions(
 
 /// Встроенный скрипт звука (во всех фреймах): политика автовоспроизведения, заглушение вкладки, состояние для индикатора.
 const AUDIO_JS: &str = include_str!("audio.js");
+
+/// Встроенный скрипт менеджера паролей (во всех фреймах): ловит введённый вход, подставляет по команде.
+const PWM_JS: &str = include_str!("pwm.js");
 
 /// Настройки движка, зависящие от настроек профиля, меняются на лету (читаются при создании страницы/на каждый запрос):
 /// сторонние куки и WebRTC (интерфейс `RTCPeerConnection` появляется у новых страниц; запрещён в герметичном режиме).
@@ -502,6 +506,7 @@ struct Running {
     webrtc_forbidden: bool,
     /// Android: поверхность окна исчезла (приложение свёрнуто) — не рисуем, пока она не вернётся.
     suspended: bool,
+    passwords: Passwords,
     muted_tabs: std::collections::HashSet<WebViewId>,
     audible_tabs: std::collections::HashSet<WebViewId>,
     /// Очередь модальных запросов Servo; рисуется первое, остальные ждут.
@@ -672,6 +677,7 @@ impl Running {
             let manager = Rc::new(UserContentManager::new(&servo));
             // Звуковая политика (автовоспроизведение, заглушение вкладки) — всегда, до пользовательских скриптов.
             manager.add_script(Rc::new(UserScript::new(AUDIO_JS.to_owned(), None)));
+            manager.add_script(Rc::new(UserScript::new(PWM_JS.to_owned(), None)));
             for js in &config.userscripts {
                 manager.add_script(Rc::new(UserScript::new(js.clone(), None)));
             }
@@ -753,6 +759,7 @@ impl Running {
                 blocked: None,
                 notice: None,
                 bookmarked: false,
+                login_form: false,
                 suggestions: Vec::new(),
                 suggest_open: false,
                 input_changed: false,
@@ -767,6 +774,7 @@ impl Running {
             next_audio_poll: std::time::Instant::now(),
             webrtc_forbidden: config.servo.webrtc_forbidden,
             suspended: false,
+            passwords: Passwords::new(config.servo.profile_dir.as_deref(), settings.passwords),
             muted_tabs: Default::default(),
             audible_tabs: Default::default(),
             modals: Default::default(),
@@ -1142,6 +1150,30 @@ impl Running {
         self.toolbar.suggestions.truncate(6);
     }
 
+    /// Выполнить последствия кадра менеджера паролей: подстановка в страницу и короткие сообщения.
+    fn run_password_effects(&mut self, effects: Vec<PwEffect>) {
+        for effect in effects {
+            match effect {
+                PwEffect::Fill {
+                    tab,
+                    username,
+                    password,
+                } => {
+                    if let Some(tab) = self.tabs.get(tab) {
+                        tab.evaluate_javascript(
+                            passwords::fill_script(&username, &password),
+                            |_| {},
+                        );
+                    }
+                }
+                PwEffect::Notice(text) => {
+                    self.print_notice = Some((text, Instant::now() + Duration::from_secs(4)));
+                }
+            }
+        }
+        self.window.request_redraw();
+    }
+
     /// Скрипт настройки звука вкладки: политика автовоспроизведения из настроек и признак «заглушена».
     fn audio_config_script(&self, id: WebViewId) -> String {
         format!(
@@ -1168,6 +1200,10 @@ impl Running {
 
     /// Раз в 1,5 с спрашивает у каждой вкладки, звучит ли она, и применяет принесённые ответы.
     fn poll_audio(&mut self) {
+        let incoming: Vec<_> = self.passwords.inbox.borrow_mut().drain(..).collect();
+        for (id, json) in incoming {
+            self.passwords.ingest(id, &json);
+        }
         let apply: Vec<WebViewId> = self.shared.audio_apply.borrow_mut().drain(..).collect();
         for id in apply {
             if let Some(tab) = self.tabs.iter().find(|t| t.id() == id) {
@@ -1186,6 +1222,18 @@ impl Running {
             return;
         }
         self.next_audio_poll = now + std::time::Duration::from_millis(1500);
+        if self.passwords.available() {
+            for tab in &self.tabs {
+                let (id, inbox) = (tab.id(), self.passwords.inbox.clone());
+                tab.evaluate_javascript(passwords::POLL_SCRIPT, move |result| {
+                    if let Ok(nrb_engine_servo::servo::JSValue::String(json)) = result
+                        && !json.is_empty()
+                    {
+                        inbox.borrow_mut().push((id, json));
+                    }
+                });
+            }
+        }
         for tab in &self.tabs {
             let (id, inbox) = (tab.id(), self.shared.audio_inbox.clone());
             tab.evaluate_javascript(
@@ -1211,6 +1259,7 @@ impl Running {
         self.search = self.settings.search.clone();
         self.shared.adblock_on.set(self.settings.adblock);
         apply_engine_policy(&self.settings, self.webrtc_forbidden);
+        self.passwords.enabled = self.settings.passwords && self.profile_dir.is_some();
         for tab in &self.tabs {
             self.apply_audio_config(tab);
         }
@@ -1313,6 +1362,15 @@ impl Running {
             Action::CloseTab(index) => self.close_tab(index),
             Action::SelectTab(index) => self.select_tab(index),
             Action::ToggleMute(index) => self.toggle_mute(index),
+            Action::OpenPasswords => self.passwords.toggle_window(),
+            Action::FillPassword => {
+                let origin = self
+                    .active_tab()
+                    .and_then(|t| t.url())
+                    .and_then(|u| passwords::origin_of(&u));
+                let effects = self.passwords.request_fill(self.active, origin.as_deref());
+                self.run_password_effects(effects);
+            }
             Action::ToggleBookmark => self.toggle_bookmark(),
             Action::OpenHistory => self.library.toggle(Panel::History),
             Action::OpenBookmarks => self.library.toggle(Panel::Bookmarks),
@@ -1383,6 +1441,8 @@ impl Running {
             _ if ctrl && character == "0" => self.apply(Action::ZoomReset),
             _ if ctrl && character == "t" => self.apply(Action::NewTab),
             _ if ctrl && character == "w" => self.apply(Action::CloseTab(self.active)),
+            _ if ctrl && shift && character == "p" => self.apply(Action::OpenPasswords),
+            _ if ctrl && shift && character == "l" => self.apply(Action::FillPassword),
             // Ctrl+M — заглушить/вернуть звук активной вкладки (как в Firefox).
             _ if ctrl && !shift && character == "m" => self.apply(Action::ToggleMute(self.active)),
             _ if ctrl && character == "l" => self.toolbar.focus_url = true,
@@ -1620,6 +1680,10 @@ impl Running {
             self.bookmark_cache = (current_url, marked);
         }
         self.toolbar.bookmarked = self.bookmark_cache.1;
+        self.toolbar.login_form = self.passwords.available()
+            && self
+                .active_tab()
+                .is_some_and(|t| self.passwords.login_tabs.contains(&t.id()));
         if self.toolbar.input_changed {
             self.toolbar.input_changed = false;
             self.refresh_suggestions();
@@ -1682,6 +1746,12 @@ impl Running {
         }
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
+        let (active_index, active_origin) = (
+            self.active,
+            self.active_tab()
+                .and_then(|t| t.url())
+                .and_then(|u| passwords::origin_of(&u)),
+        );
         let mut actions = Vec::new();
         let mut content_top = 0.0_f32;
         let toolbar = &mut self.toolbar;
@@ -1690,10 +1760,12 @@ impl Running {
         let mut library_actions = Vec::new();
         let mut nodes_restart = false;
         let mut find_actions = Vec::new();
+        let mut password_effects = Vec::new();
         let mut output = self.egui_ctx.clone().run_ui(raw_input, |ui| {
             if !fullscreen {
                 actions = ui::toolbar(ui, &tabs, toolbar);
                 find_actions = self.find_bar.show(ui);
+                password_effects = self.passwords.show(ui, active_index, active_origin.clone());
                 content_top = ui.available_rect_before_wrap().top();
             }
             library_actions = self.library.show(
@@ -1722,6 +1794,7 @@ impl Running {
                 LibraryAction::PermissionsChanged => self.reload_permissions(),
             }
         }
+        self.run_password_effects(password_effects);
         for action in find_actions {
             let Some(tab) = self.active_tab() else {
                 continue;

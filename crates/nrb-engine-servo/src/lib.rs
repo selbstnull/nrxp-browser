@@ -289,6 +289,26 @@ impl EventLoopWaker for PollWaker {
     }
 }
 
+/// Заголовок страницы-проверки антибота: она сама перенаправит, когда проверка закончится (см. `snapshot`).
+fn is_interstitial_title(title: &str) -> bool {
+    let title = title.to_lowercase();
+    [
+        "just a moment",
+        "checking your browser",
+        "checking if the site connection is secure",
+        "pardon our interruption",
+        "attention required",
+        "verifying you are human",
+        "one moment, please",
+        "ddos-guard",
+        "проверка браузера",
+        "проверяем ваш браузер",
+        "подождите",
+    ]
+    .iter()
+    .any(|marker| title.contains(marker))
+}
+
 pub struct ServoSnapshotter {
     servo: Servo,
     state: Rc<PageState>,
@@ -406,6 +426,25 @@ impl Snapshotter for ServoSnapshotter {
             }
         }
 
+        // Страницы-проверки («Checking your browser…», «Just a moment…», «Pardon Our Interruption…») сами перенаправляют на
+        // нужную страницу через несколько секунд, когда скрипт проверки закончит работу. Снимать их бессмысленно: ждём, пока
+        // заголовок/адрес не сменятся, пока не выйдет общее время.
+        let mut challenge_rounds = 0;
+        while webview
+            .page_title()
+            .as_deref()
+            .is_some_and(is_interstitial_title)
+            && challenge_rounds < 15
+            && Instant::now() + Duration::from_secs(3) < deadline
+        {
+            challenge_rounds += 1;
+            self.pump(
+                Some(&webview),
+                Instant::now() + Duration::from_secs(2),
+                || false,
+            )?;
+        }
+
         // Штатный скриншот ждёт «полной готовности» (все картинки, шрифты, отсутствие блокирующих
         // ресурсов). У живых сайтов с фоновыми запросами или упавшим скриптом она не наступает —
         // тогда берём то, что уже нарисовано, и помечаем снимок как неполный.
@@ -494,5 +533,30 @@ impl Snapshotter for ServoSnapshotter {
             title,
             final_url,
         })
+    }
+}
+
+#[cfg(test)]
+mod interstitial_tests {
+    use super::is_interstitial_title;
+
+    #[test]
+    fn challenge_titles_are_recognised() {
+        for title in [
+            "Just a moment...",
+            "Pardon Our Interruption...",
+            "Attention Required! | Cloudflare",
+            "Проверка браузера перед переходом на сайт",
+        ] {
+            assert!(is_interstitial_title(title), "{title}");
+        }
+        for title in [
+            "Rust Programming Language",
+            "eBay",
+            "Newest Questions - Stack Overflow",
+            "",
+        ] {
+            assert!(!is_interstitial_title(title), "{title}");
+        }
     }
 }

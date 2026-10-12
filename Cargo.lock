@@ -5292,6 +5292,8 @@ dependencies = [
  "nrb-engine-servo",
  "nrb-pdf",
  "nrb-profile",
+ "nrb-vault",
+ "serde_json",
  "tracing",
  "url",
  "winit",
@@ -5331,6 +5333,20 @@ version = "0.0.1"
 dependencies = [
  "regex",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nrb-vault"
+version = "0.0.1"
+dependencies = [
+ "argon2",
+ "chacha20poly1305 0.10.1",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "zeroize",
 ]
 
 [[package]]

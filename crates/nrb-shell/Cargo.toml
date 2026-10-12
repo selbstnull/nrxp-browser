@@ -16,6 +16,8 @@ tracing.workspace = true
 url.workspace = true
 http = "1"
 nrb-pdf = { path = "../nrb-pdf" }
+nrb-vault = { path = "../nrb-vault" }
+serde_json = "1"
 dpi = "0.1"
 winit = "0.30"
 egui = "0.36"

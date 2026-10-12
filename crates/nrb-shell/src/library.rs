@@ -236,6 +236,9 @@ impl Library {
             changed |= ui
                 .checkbox(&mut settings.autoplay_with_sound, "Разрешать автовоспроизведение со звуком (иначе ролик со звуком ждёт клика)")
                 .changed();
+            changed |= ui
+                .checkbox(&mut settings.passwords, "Менеджер паролей: предлагать сохранить введённые пароли (хранилище зашифровано мастер-паролем; в приватном сеансе недоступно)")
+                .changed();
             ui.add_enabled_ui(webrtc_available, |ui| {
                 changed |= ui
                     .checkbox(&mut settings.webrtc, "WebRTC (каналы данных, звонки): только через TURN по TCP и туннель; без TURN-сервера у сайта соединение не установится")

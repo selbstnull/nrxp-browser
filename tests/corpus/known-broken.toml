@@ -6,14 +6,5 @@ id = "neverssl"
 reason = "среда: порт 80 (plain HTTP) недоступен из этой сети — curl тоже молчит; не дефект браузера"
 
 [[broken]]
-id = "stackoverflow"
-reason = "Cloudflare-челлендж («Just a moment…»): антибот требует JS/куки-проверку, которую Servo не проходит"
-
-[[broken]]
-id = "ebay"
-reason = "антибот-страница «Pardon Our Interruption»"
-
-[[broken]]
 id = "twitch"
 reason = "не дозагружается за 55 с даже в режиме partial; тяжёлое SPA, не исследовано"
-
