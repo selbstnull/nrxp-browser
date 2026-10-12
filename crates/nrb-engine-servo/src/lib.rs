@@ -118,6 +118,7 @@ pub fn apply_pref_overrides(prefs: &mut Preferences, spec: &str) {
             "credential_management" => Some(&mut prefs.dom_credential_management_enabled),
             "worklet" => Some(&mut prefs.dom_worklet_enabled),
             "resize_observer" => Some(&mut prefs.dom_resize_observer_enabled),
+            "mse" => Some(&mut prefs.dom_mse_enabled),
             "webrtc" => Some(&mut prefs.dom_webrtc_enabled),
             "webrtc_transceiver" => Some(&mut prefs.dom_webrtc_transceiver_enabled),
             _ => None,
@@ -143,6 +144,8 @@ pub fn build_preferences(config: &ServoConfig) -> Preferences {
         dom_adoptedstylesheet_enabled: true,
         // События композиции (ввод через IME) — оболочка их шлёт, но без настройки они не доходят до страницы.
         dom_composition_event_enabled: true,
+        // Media Source Extensions (форк: fMP4 H.264/AAC поверх GStreamer) — только там, где есть воспроизведение.
+        dom_mse_enabled: cfg!(feature = "media"),
         ..Preferences::default()
     };
     // Экспериментальные переключатели для замеров на корпусе: `NRB_PREFS=intersection_observer,fontface` (включить)

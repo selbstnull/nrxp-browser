@@ -1,0 +1,51 @@
+<!doctype html><meta charset=utf-8><title>mse: init</title>
+<style>video{position:absolute;left:20px;top:20px;width:480px;height:270px;background:#222}</style>
+<video id=v playsinline></video>
+<script>
+  // Media Source Extensions: отдельные буферы видео и звука (как у YouTube), фрагментированный MP4.
+  // ?v=video.mp4&a=audio.mp4 — файлы; ?seek=3 — через 1.5 с после старта перемотать; ?chunk=1 — добавлять кусками по 20 КБ.
+  var q = new URLSearchParams(location.search);
+  var vurl = q.get('v') || 'video.mp4', aurl = q.get('a') || 'audio.mp4';
+  var v = document.getElementById('v');
+  v.muted = true;
+  function status(s) { document.title = 'mse: ' + s; }
+  v.addEventListener('error', function () { status('error code=' + (v.error && v.error.code)); });
+  v.addEventListener('loadedmetadata', function () { status('meta ' + v.videoWidth + 'x' + v.videoHeight + ' dur=' + v.duration.toFixed(1)); });
+  v.addEventListener('seeked', function () { status('seeked t=' + v.currentTime.toFixed(1)); });
+  v.addEventListener('ended', function () { status('ended t=' + v.currentTime.toFixed(1)); });
+  setInterval(function () { if (!v.paused && !v.ended && !v.seeking) status('playing t=' + v.currentTime.toFixed(1) + ' buf=' + (v.buffered.length ? v.buffered.end(0).toFixed(1) : 'none')); }, 400);
+  if (!window.MediaSource) {
+    status('no-mediasource');
+  } else {
+    var ms = new MediaSource();
+    v.src = URL.createObjectURL(ms);
+    ms.addEventListener('sourceopen', async function () {
+      try {
+        var vs = ms.addSourceBuffer('video/mp4; codecs="avc1.64001e"');
+        var as = ms.addSourceBuffer('audio/mp4; codecs="mp4a.40.2"');
+        var get = async function (u) { return new Uint8Array(await (await fetch(u)).arrayBuffer()); };
+        var append = function (sb, data) {
+          return new Promise(function (res, rej) {
+            sb.onupdateend = res;
+            sb.onerror = function () { rej(new Error('append error')); };
+            sb.appendBuffer(data);
+          });
+        };
+        var appendAll = async function (sb, data) {
+          if (!q.get('chunk')) { await append(sb, data); return; }
+          for (var i = 0; i < data.length; i += 20000) await append(sb, data.subarray(i, i + 20000));
+        };
+        var d = await Promise.all([get(vurl), get(aurl)]);
+        await appendAll(vs, d[0]);
+        await appendAll(as, d[1]);
+        ms.endOfStream();
+        status('appended dur=' + ms.duration.toFixed(1) + ' vb=' + vs.buffered.length);
+        v.play().catch(function (e) { status('play-rejected ' + e.name); });
+        var seek = q.get('seek');
+        if (seek) setTimeout(function () { status('seeking'); v.currentTime = parseFloat(seek); }, 1500);
+      } catch (e) {
+        status('fail ' + e.message);
+      }
+    });
+  }
+</script>
