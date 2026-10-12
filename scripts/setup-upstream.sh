@@ -20,14 +20,15 @@ else
     git -C "$SRC" worktree add "$PWD/$WT" "$BRANCH"
   else
     git -C "$SRC" worktree add -b "$BRANCH" "$PWD/$WT" HEAD
-    for patch in patches/proxy/*.patch; do
-      # Ядро с 2026-10-10 уже содержит наш коммит (netrunner-proxy main, a43a077): тогда патч уже применён — пропускаем.
-      if git -C "$WT" apply --check -R "$PWD/$patch" >/dev/null 2>&1; then
-        echo "патч уже в ядре: $patch"
-      else
+    # Ядро с 2026-10-10 уже содержит наш коммит (netrunner-proxy main, a43a077; ядро идёт дальше, поэтому «обратное применение»
+    # патча не проверяем — оно ломается от соседних правок): признак — файл reverse_egress.rs. Патчи нужны только старому ядру.
+    if [ -f "$WT/core/src/net/connection/reverse_egress.rs" ]; then
+      echo "ядро уже содержит reverse egress и надёжный Connect — патчи patches/proxy/ не нужны"
+    else
+      for patch in patches/proxy/*.patch; do
         git -C "$WT" -c user.name="${GIT_AUTHOR_NAME:-nrb}" -c user.email="${GIT_AUTHOR_EMAIL:-nrb@localhost}" am "$PWD/$patch"
-      fi
-    done
+      done
+    fi
   fi
   echo "готово: $WT"
 fi
@@ -35,6 +36,11 @@ fi
 # --- Servo: форк nrxp-servo (обязателен с N2: браузер использует `ServoBuilder::network_connector`, которого нет в crates.io).
 # Результат — `.cargo/config.toml` с [patch.crates-io] (генерируется, в git не хранится). Подмена ВСЕХ крейтов servo* обязательна:
 # частичная подмена даёт два набора несовместимых типов (path- и registry-версии одного крейта).
+# NRB_NO_SERVO=1 — только ядро (проверки крейтов без движка в CI: Servo не нужен, цель — узел, туннель, профиль и т. п.).
+if [ "${NRB_NO_SERVO:-0}" = 1 ]; then
+  echo "NRB_NO_SERVO=1: Servo не подключаем (без .cargo/config.toml); собирать nrb с фичей servo в таком режиме нельзя"
+  exit 0
+fi
 NRXP_SERVO_DIR="${NRXP_SERVO_DIR:-$PWD/../nrxp-servo}"
 if [ ! -f "$NRXP_SERVO_DIR/components/servo/Cargo.toml" ]; then
   echo "нет форка Servo: $NRXP_SERVO_DIR (задайте NRXP_SERVO_DIR). Нужна ветка nrxp/0.7 репозитория nrxp-servo: см. docs/NRXP-SERVO.md"

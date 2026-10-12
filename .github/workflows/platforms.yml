@@ -33,9 +33,11 @@ jobs:
           repository: selbstnull/netrunner-core
           path: netrunner-proxy
       - uses: dtolnay/rust-toolchain@stable
-      - name: "подготовка (.nrb-dev: worktree ядра и патч)"
+      - name: "подготовка (.nrb-dev: worktree ядра)"
         shell: bash
         working-directory: netrunner-browser
+        env:
+          NRB_NO_SERVO: "1"
         run: scripts/setup-upstream.sh
       - name: тесты крейтов без движка
         working-directory: netrunner-browser
@@ -57,6 +59,8 @@ jobs:
         with: { ndk-version: r27 }
       - name: подготовка
         working-directory: netrunner-browser
+        env:
+          NRB_NO_SERVO: "1"
         run: scripts/setup-upstream.sh
       - name: cargo check (arm64)
         working-directory: netrunner-browser
@@ -80,8 +84,17 @@ jobs:
         with: { path: netrunner-browser }
       - uses: actions/checkout@v4
         with: { repository: selbstnull/netrunner-core, path: netrunner-proxy }
-      - uses: actions/checkout@v4
-        with: { repository: "${{ inputs.servo_repo }}", ref: nrxp/0.7, path: nrxp-servo }
+      - name: "форк Servo (nrxp/0.7)"
+        shell: bash
+        env:
+          SERVO_REPO: ${{ inputs.servo_repo }}
+        run: |
+          # Принимаем и «владелец/репозиторий», и полный URL.
+          case "$SERVO_REPO" in
+            http*|git@*) url="$SERVO_REPO" ;;
+            *) url="https://github.com/$SERVO_REPO.git" ;;
+          esac
+          git clone --depth 1 --branch nrxp/0.7 "$url" nrxp-servo
       - uses: dtolnay/rust-toolchain@stable
       - name: "Linux: системные пакеты"
         if: runner.os == 'Linux'
