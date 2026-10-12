@@ -47,5 +47,8 @@ if [ ! -f "$NRXP_SERVO_DIR/components/servo/Cargo.toml" ]; then
   exit 1
 fi
 mkdir -p .cargo
-python3 scripts/gen-servo-patch.py "$NRXP_SERVO_DIR" Cargo.lock > .cargo/config.toml
+# Windows: интерпретатор называется `python` (python3.exe может не быть).
+PY="$(command -v python3 || command -v python || true)"
+[ -n "$PY" ] || { echo "нужен python3 (или python)"; exit 1; }
+"$PY" scripts/gen-servo-patch.py "$NRXP_SERVO_DIR" Cargo.lock > .cargo/config.toml
 echo "готово: Servo из форка $NRXP_SERVO_DIR (ветка $(git -C "$NRXP_SERVO_DIR" branch --show-current)); .cargo/config.toml"

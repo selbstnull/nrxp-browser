@@ -40,8 +40,9 @@ jobs:
           NRB_NO_SERVO: "1"
         run: scripts/setup-upstream.sh
       - name: тесты крейтов без движка
+        shell: bash
         working-directory: netrunner-browser
-        run: cargo test -p nrb -p nrb-node -p nrb-transport -p nrb-net -p nrb-profile -p nrb-deploy -p nrb-adblock -p nrb-userscripts -p nrb-hermetic -p nrb-update -p nrb-pdf
+        run: scripts/ci-run.sh "portable tests ${{ matrix.os }}" cargo test --no-fail-fast -p nrb -p nrb-node -p nrb-transport -p nrb-net -p nrb-profile -p nrb-deploy -p nrb-adblock -p nrb-userscripts -p nrb-hermetic -p nrb-update -p nrb-pdf
 
   android-check:
     # Только компиляция без движка (движок под Android — отдельная работа: см. docs/PLATFORMS.md).
@@ -111,10 +112,11 @@ jobs:
       - name: подготовка
         shell: bash
         working-directory: netrunner-browser
-        run: NRXP_SERVO_DIR="$GITHUB_WORKSPACE/nrxp-servo" scripts/setup-upstream.sh
+        run: NRXP_SERVO_DIR="$GITHUB_WORKSPACE/nrxp-servo" scripts/ci-run.sh "engine setup ${{ matrix.os }}" scripts/setup-upstream.sh
       - name: сборка nrb с движком
+        shell: bash
         working-directory: netrunner-browser
-        run: cargo build --release -p nrb --features servo
+        run: scripts/ci-run.sh "engine build ${{ matrix.os }}" cargo build --release -p nrb --features servo
       - name: самопроверка запуска
         shell: bash
         working-directory: netrunner-browser
