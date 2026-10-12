@@ -178,11 +178,42 @@ pub fn build_opts(config: &ServoConfig) -> servo::Opts {
         config_dir: config.profile_dir.clone().or_else(|| ephemeral_dir().ok()),
         temporary_storage: config.profile_dir.is_none(),
         // Мультипроцесс (фича `multiprocess`): `NRB_MULTIPROCESS=1`, песочница контент-процессов — `NRB_SANDBOX=1`.
-        multiprocess: cfg!(feature = "multiprocess") && env_flag("NRB_MULTIPROCESS"),
-        sandbox: cfg!(feature = "multiprocess")
-            && env_flag("NRB_MULTIPROCESS")
-            && env_flag("NRB_SANDBOX"),
+        multiprocess: multiprocess_enabled(),
+        sandbox: multiprocess_enabled() && sandbox_requested(),
         ..servo::Opts::default()
+    }
+}
+
+/// Страницы работают в отдельных процессах (фича `multiprocess` + `NRB_MULTIPROCESS=1`).
+///
+/// Что от этого зависит: статики процесса движка не доходят до контент-процессов — в частности политика WebRTC
+/// (`install_webrtc_policy`) там осталась бы по умолчанию (прямой ICE, утечка адреса), поэтому WebRTC в этом режиме
+/// запрещён (`app.rs: apply_engine_policy`, `gui.rs`). Настройки-«prefs» контент-процесс получает снимком при запуске:
+/// живое переключение действует только на новые процессы.
+pub fn multiprocess_enabled() -> bool {
+    cfg!(feature = "multiprocess") && env_flag("NRB_MULTIPROCESS")
+}
+
+/// Песочница контент-процессов Servo (gaol: seccomp + пространства имён; только Linux x86_64 и macOS).
+///
+/// Проверено 2026-10-12 на Linux: контент-процесс в песочнице молча убивается ядром (страница пустая, до таймаута), потому что
+/// профиль gaol пускает его лишь к `/dev/urandom` и файлам ресурсов, а фильтр syscall'ов не знает того, что нужно движку
+/// (шрифты, GStreamer, потоки SpiderMonkey). Поэтому `NRB_SANDBOX=1` не включает её, а предупреждает; включить на свой риск
+/// для экспериментов — `NRB_SANDBOX=force`.
+fn sandbox_requested() -> bool {
+    match std::env::var("NRB_SANDBOX").as_deref() {
+        Ok("force") => cfg!(any(
+            target_os = "macos",
+            all(target_os = "linux", target_arch = "x86_64")
+        )),
+        Ok("1") => {
+            eprintln!(
+                "NRB_SANDBOX=1: песочница контент-процессов Servo (gaol) пока убивает процесс страницы — не включена \
+                 (NRB_SANDBOX=force включает её для экспериментов)"
+            );
+            false
+        }
+        _ => false,
     }
 }
 

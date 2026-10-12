@@ -184,7 +184,10 @@ const PWM_JS: &str = include_str!("pwm.js");
 /// сторонние куки и WebRTC (интерфейс `RTCPeerConnection` появляется у новых страниц; запрещён в герметичном режиме).
 fn apply_engine_policy(settings: &nrb_profile::Settings, webrtc_forbidden: bool) {
     use nrb_engine_servo::servo::prefs;
-    let webrtc = settings.webrtc && !webrtc_forbidden;
+    let webrtc = settings.webrtc
+        && !webrtc_forbidden
+        // Политика WebRTC (relay-only через туннель) — статик процесса и в контент-процессы не попадает.
+        && !nrb_engine_servo::multiprocess_enabled();
     let mut preferences = prefs::get().clone();
     if preferences.network_block_third_party_cookies != settings.block_third_party_cookies
         || preferences.dom_webrtc_enabled != webrtc

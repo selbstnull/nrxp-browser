@@ -119,7 +119,7 @@ pub fn run(
             devtools_port: devtools,
             user_scripts: Vec::new(),
             webrtc_proxy: tunnel.as_ref().map(|t| t.webrtc_proxy()),
-            webrtc_forbidden: node.hermetic,
+            webrtc_forbidden: node.hermetic || nrb_engine_servo::multiprocess_enabled(),
         },
         search: search.to_owned(),
         userscripts,
