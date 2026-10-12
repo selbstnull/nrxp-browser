@@ -9,7 +9,7 @@ fork, lock = sys.argv[1], sys.argv[2]
 meta = json.loads(subprocess.run(
     ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"],
     cwd=fork, check=True, capture_output=True, text=True).stdout)
-members = {p["name"]: p["manifest_path"].rsplit("/Cargo.toml", 1)[0] for p in meta["packages"]}
+members = {p["name"]: p["manifest_path"].replace("\\", "/").rsplit("/Cargo.toml", 1)[0] for p in meta["packages"]}
 
 registry = set()  # имена пакетов из Cargo.lock
 text = open(lock, encoding="utf-8").read()
@@ -24,6 +24,9 @@ print("[patch.crates-io]")
 count = 0
 for name in sorted(members):
     if name in registry and name.startswith("servo"):
-        print(f'{name} = {{ path = "{members[name]}" }}')
+        # Windows: `cargo metadata` отдаёт пути с обратной косой чертой, а в TOML-строке она — экранирование. Приводим к `/`
+        # (Cargo принимает такие пути на всех ОС).
+        path = members[name].replace("\\", "/")
+        print(f'{name} = {{ path = "{path}" }}')
         count += 1
 print(f"# подменено крейтов: {count}", file=sys.stderr)

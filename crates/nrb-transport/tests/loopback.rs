@@ -318,12 +318,15 @@ async fn slow_reader_does_not_kill_the_stream() {
 }
 
 fn random_hex32() -> String {
-    use std::io::Read;
-    let mut bytes = [0u8; 32];
-    std::fs::File::open("/dev/urandom")
-        .unwrap()
-        .read_exact(&mut bytes)
-        .unwrap();
+    // Случайные 32 байта без платформенных источников (`/dev/urandom` на Windows нет): `RandomState` засевается ОС для каждого
+    // экземпляра. Это тестовые секреты узла, криптостойкость не нужна — нужна непредсказуемость между запусками.
+    use std::hash::{BuildHasher, Hasher, RandomState};
+    let mut bytes = Vec::with_capacity(32);
+    for round in 0u64..4 {
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u64(round);
+        bytes.extend_from_slice(&hasher.finish().to_le_bytes());
+    }
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
