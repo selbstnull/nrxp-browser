@@ -69,7 +69,6 @@ New in core: reverse egress carries client flows through the dialer
 targets refused / LAN opt-in, per-client exit policy (local / pinned to a
 label / refused), egress flow limit.
 
-Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ---
  core/src/net/auth.rs                      |  10 +
  core/src/net/connection/connection.rs     | 613 +++++++++++++++++++++-
