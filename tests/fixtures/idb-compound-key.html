@@ -1,0 +1,16 @@
+<!doctype html><meta charset=utf-8><title>idb: init</title>
+<script>
+function st(s) { document.title = 'idb: ' + s; }
+var req = indexedDB.open('t' + Date.now(), 1);
+req.onupgradeneeded = function () { req.result.createObjectStore('s', { keyPath: ['key', 'clientName'] }); };
+req.onerror = function () { st('open error'); };
+req.onsuccess = function () {
+  var db = req.result, tx = db.transaction('s', 'readwrite'), s = tx.objectStore('s');
+  try { s.put({ key: 'browse', clientName: 1, v: 'hello' }, undefined); } catch (e) { st('put threw ' + e.name); return; }
+  tx.oncomplete = function () {
+    var g = db.transaction('s').objectStore('s').get(['browse', 1]);
+    g.onsuccess = function () { st(g.result && g.result.v === 'hello' ? 'ok compound key roundtrip' : 'get returned ' + JSON.stringify(g.result)); };
+  };
+  tx.onerror = function () { st('tx error ' + (tx.error && tx.error.name)); };
+};
+</script>

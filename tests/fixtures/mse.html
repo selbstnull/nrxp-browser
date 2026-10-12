@@ -7,7 +7,7 @@
   var q = new URLSearchParams(location.search);
   var vurl = q.get('v') || 'video.mp4', aurl = q.get('a') || 'audio.mp4';
   var v = document.getElementById('v');
-  v.muted = true;
+  v.muted = !q.get('sound');
   function status(s) { document.title = 'mse: ' + s; }
   v.addEventListener('error', function () { status('error code=' + (v.error && v.error.code)); });
   v.addEventListener('loadedmetadata', function () { status('meta ' + v.videoWidth + 'x' + v.videoHeight + ' dur=' + v.duration.toFixed(1)); });
