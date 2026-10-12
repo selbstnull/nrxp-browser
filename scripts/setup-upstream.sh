@@ -47,6 +47,8 @@ if [ ! -f "$NRXP_SERVO_DIR/components/servo/Cargo.toml" ]; then
   exit 1
 fi
 mkdir -p .cargo
+# Windows: консоль Python по умолчанию в cp1252, а скрипты печатают русский текст.
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
 # Windows: интерпретатор называется `python` (python3.exe может не быть).
 PY="$(command -v python3 || command -v python || true)"
 [ -n "$PY" ] || { echo "нужен python3 (или python)"; exit 1; }

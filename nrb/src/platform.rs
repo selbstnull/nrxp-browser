@@ -39,36 +39,72 @@ fn var<'a>(env: &'a Env, name: &str) -> Option<&'a str> {
     env.get(name).map(String::as_str).filter(|v| !v.is_empty())
 }
 
+/// Разделитель путей целевой ОС (не той, где собран бинарь: правила проверяются тестами на любой машине).
+fn sep(os: Os) -> char {
+    if os == Os::Windows { '\\' } else { '/' }
+}
+
+/// Склейка пути по правилам целевой ОС: `a` + `b` с её разделителем (разделители в `b` приводятся к нему же).
+fn join_for(os: Os, base: &str, rest: &str) -> String {
+    let separator = sep(os);
+    let rest: String = rest
+        .chars()
+        .map(|c| if c == '/' || c == '\\' { separator } else { c })
+        .collect();
+    format!(
+        "{}{}{}",
+        base.trim_end_matches(['/', '\\']),
+        separator,
+        rest
+    )
+}
+
+/// Абсолютный ли путь по правилам целевой ОС (`/…` на Unix; `C:\…`, `C:/…` и `\\сервер\…` на Windows).
+fn is_absolute_for(os: Os, path: &str) -> bool {
+    match os {
+        Os::Windows => {
+            let b = path.as_bytes();
+            (b.len() >= 3
+                && b[1] == b':'
+                && b[0].is_ascii_alphabetic()
+                && (b[2] == b'\\' || b[2] == b'/'))
+                || path.starts_with("\\\\")
+        }
+        _ => path.starts_with('/'),
+    }
+}
+
 /// Домашний каталог пользователя.
-fn home(os: Os, env: &Env) -> Option<PathBuf> {
+fn home(os: Os, env: &Env) -> Option<String> {
     match os {
         Os::Windows => var(env, "USERPROFILE").or_else(|| var(env, "HOME")),
         _ => var(env, "HOME"),
     }
-    .map(PathBuf::from)
+    .map(str::to_owned)
+}
+
+fn absolute_var<'a>(os: Os, env: &'a Env, name: &str) -> Option<&'a str> {
+    var(env, name).filter(|v| is_absolute_for(os, v))
 }
 
 /// Каталог данных браузера: профили, узел, ключи. Явно заданный `NRB_DATA_DIR` важнее всего (Android: путь приложения).
 pub fn data_dir_for(os: Os, env: &Env) -> Option<PathBuf> {
-    if let Some(dir) = var(env, "NRB_DATA_DIR")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-    {
-        return Some(dir);
+    if let Some(dir) = absolute_var(os, env, "NRB_DATA_DIR") {
+        return Some(PathBuf::from(dir));
     }
     let base = match os {
-        Os::Linux | Os::Android => var(env, "XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| home(os, env).map(|h| h.join(".local/share")))?,
-        Os::Mac => home(os, env)?.join("Library/Application Support"),
+        Os::Linux | Os::Android => match absolute_var(os, env, "XDG_DATA_HOME") {
+            Some(dir) => dir.to_owned(),
+            None => join_for(os, &home(os, env)?, ".local/share"),
+        },
+        Os::Mac => join_for(os, &home(os, env)?, "Library/Application Support"),
         // Локальные (не роуминговые) данные: профиль с кэшем и ключами узла не должен уезжать на другие машины домена.
-        Os::Windows => var(env, "LOCALAPPDATA")
-            .or_else(|| var(env, "APPDATA"))
-            .map(PathBuf::from)
-            .or_else(|| home(os, env).map(|h| h.join("AppData/Local")))?,
+        Os::Windows => match var(env, "LOCALAPPDATA").or_else(|| var(env, "APPDATA")) {
+            Some(dir) => dir.to_owned(),
+            None => join_for(os, &home(os, env)?, "AppData/Local"),
+        },
     };
-    Some(base.join("netrunner-browser"))
+    Some(PathBuf::from(join_for(os, &base, "netrunner-browser")))
 }
 
 pub fn data_dir() -> Option<PathBuf> {
@@ -78,11 +114,8 @@ pub fn data_dir() -> Option<PathBuf> {
 /// Каталог загрузок. Linux: `XDG_DOWNLOAD_DIR` из `user-dirs.dirs` (содержимое файла передаётся параметром), иначе
 /// `~/Downloads`; Windows/macOS: `~/Downloads`; `NRB_DOWNLOADS_DIR` важнее всего.
 pub fn downloads_dir_for(os: Os, env: &Env, user_dirs: Option<&str>) -> PathBuf {
-    if let Some(dir) = var(env, "NRB_DOWNLOADS_DIR")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-    {
-        return dir;
+    if let Some(dir) = absolute_var(os, env, "NRB_DOWNLOADS_DIR") {
+        return PathBuf::from(dir);
     }
     let home = home(os, env).unwrap_or_default();
     if matches!(os, Os::Linux)
@@ -90,18 +123,14 @@ pub fn downloads_dir_for(os: Os, env: &Env, user_dirs: Option<&str>) -> PathBuf 
     {
         for line in text.lines() {
             if let Some(value) = line.trim().strip_prefix("XDG_DOWNLOAD_DIR=") {
-                let value = value
-                    .trim()
-                    .trim_matches('"')
-                    .replace("$HOME", &home.to_string_lossy());
-                let path = PathBuf::from(value);
-                if path.is_absolute() && path != home {
-                    return path;
+                let value = value.trim().trim_matches('"').replace("$HOME", &home);
+                if is_absolute_for(os, &value) && value != home {
+                    return PathBuf::from(value);
                 }
             }
         }
     }
-    home.join("Downloads")
+    PathBuf::from(join_for(os, &home, "Downloads"))
 }
 
 pub fn downloads_dir() -> PathBuf {
@@ -110,7 +139,7 @@ pub fn downloads_dir() -> PathBuf {
     let user_dirs = if os == Os::Linux {
         let config = var(&env, "XDG_CONFIG_HOME")
             .map(PathBuf::from)
-            .or_else(|| home(os, &env).map(|h| h.join(".config")))
+            .or_else(|| home(os, &env).map(|h| PathBuf::from(join_for(os, &h, ".config"))))
             .unwrap_or_default();
         std::fs::read_to_string(config.join("user-dirs.dirs")).ok()
     } else {
@@ -121,7 +150,7 @@ pub fn downloads_dir() -> PathBuf {
 
 /// Домашний каталог (для `~/.ssh` и т. п.).
 pub fn home_dir() -> Option<PathBuf> {
-    home(Os::current(), &current_env())
+    home(Os::current(), &current_env()).map(PathBuf::from)
 }
 
 /// Команда, которой ОС открывает путь в файловом менеджере: `(программа, аргументы до пути)`. `None` — не поддерживается.
@@ -188,15 +217,15 @@ mod tests {
                     ("USERPROFILE", "C:\\Users\\u")
                 ])
             ),
-            Some(PathBuf::from("C:\\Users\\u\\AppData\\Local").join("netrunner-browser"))
+            Some(PathBuf::from(
+                "C:\\Users\\u\\AppData\\Local\\netrunner-browser"
+            ))
         );
         assert_eq!(
             data_dir_for(Os::Windows, &env(&[("USERPROFILE", "C:\\Users\\u")])),
-            Some(
-                PathBuf::from("C:\\Users\\u")
-                    .join("AppData/Local")
-                    .join("netrunner-browser")
-            )
+            Some(PathBuf::from(
+                "C:\\Users\\u\\AppData\\Local\\netrunner-browser"
+            ))
         );
         // Android: путь приложения явно.
         assert_eq!(
@@ -231,7 +260,7 @@ mod tests {
         );
         assert_eq!(
             downloads_dir_for(Os::Windows, &env(&[("USERPROFILE", "C:\\Users\\u")]), None),
-            PathBuf::from("C:\\Users\\u").join("Downloads")
+            PathBuf::from("C:\\Users\\u\\Downloads")
         );
         assert_eq!(
             downloads_dir_for(
@@ -241,6 +270,19 @@ mod tests {
             ),
             PathBuf::from("/sdcard/Download")
         );
+    }
+
+    #[test]
+    fn absoluteness_follows_the_target_os() {
+        assert!(is_absolute_for(Os::Linux, "/data"));
+        assert!(!is_absolute_for(Os::Linux, "rel/path"));
+        assert!(!is_absolute_for(Os::Linux, "C:\\x"));
+        assert!(is_absolute_for(Os::Windows, "C:\\Users"));
+        assert!(is_absolute_for(Os::Windows, "d:/data"));
+        assert!(is_absolute_for(Os::Windows, "\\\\server\\share"));
+        assert!(!is_absolute_for(Os::Windows, "/data"));
+        assert_eq!(join_for(Os::Windows, "C:\\a\\", "b/c"), "C:\\a\\b\\c");
+        assert_eq!(join_for(Os::Linux, "/a/", "b\\c"), "/a/b/c");
     }
 
     #[test]

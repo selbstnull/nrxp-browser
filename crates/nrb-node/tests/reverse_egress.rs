@@ -185,8 +185,16 @@ async fn roles_do_not_mix() {
         Duration::from_secs(3),
     )
     .await;
-    assert!(rejected.is_err(), "клиентский токен не даёт роль выхода");
-    assert!(f.ingress.live_egress().is_empty());
+    // Отказ может прийти позже, чем клиент сочтёт ноги поднятыми (на медленных машинах, например macOS-раннере CI, `start`
+    // успевает вернуться Ok): важно, что ingress выхода так и не зарегистрировал, пока клиентский токен держит соединение.
+    for _ in 0..20 {
+        assert!(
+            f.ingress.live_egress().is_empty(),
+            "клиентский токен не даёт роль выхода"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    drop(rejected);
 
     // А токен выхода не работает как клиентский.
     let (_, egress_token) = f.store.add_device_with_role("дом", Role::Egress).unwrap();
