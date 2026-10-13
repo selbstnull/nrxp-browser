@@ -49,7 +49,7 @@ check_wait "автозапуск со звуком без жеста забло�
 if wait_streams 0 4; then echo "ok   аудиопотока nrb в PipeWire нет"; else echo "FAIL поток есть при заблокированном автозапуске"; fail=1; fi
 
 # Жест + кнопка.
-click 120 $((56 + 335)); sleep 3
+click 120 $((85 + 335)); sleep 3
 check_wait "после клика ролик играет" "media: playing" 14
 if wait_streams ">0" 8; then echo "ok   в PipeWire появился аудиопоток nrb"; else echo "FAIL аудиопотока нет, хотя ролик играет"; fail=1; fi
 shot 01-playing

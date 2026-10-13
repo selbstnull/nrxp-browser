@@ -21,7 +21,7 @@ shot 02-hn
 # Клик по ссылке и «назад» — на локальных фикстурах (детерминированно, без сети).
 xdotool key ctrl+l; sleep 0.3; xdotool type --delay 30 "file://$PWD/tests/fixtures/nav-a.html"; xdotool key Return; sleep 2
 check "локальная страница A" "Page A"
-xdotool mousemove --window "$WID" 200 150; sleep 0.3; xdotool click 1; sleep 2
+xdotool mousemove --window "$WID" 200 179; sleep 0.3; xdotool click 1; sleep 2
 check "клик по ссылке" "Page B"
 xdotool key alt+Left; sleep 3.5
 check "назад (Alt+←)" "Page A"
@@ -35,7 +35,7 @@ xdotool key ctrl+Tab; sleep 1.5
 check "переключение вкладок (Ctrl+Tab)" "Page B"
 
 xdotool key ctrl+t; sleep 0.8; xdotool type --delay 30 "$FIXTURE"; xdotool key Return; sleep 3
-xdotool mousemove --window "$WID" 300 156; xdotool click 1; sleep 0.5
+xdotool mousemove --window "$WID" 300 185; xdotool click 1; sleep 0.5
 xdotool type --delay 80 "abc "; sleep 0.5; xdotool type --delay 250 "привет"; sleep 1
 # xdotool перекартирует клавиатуру на лету и иногда дублирует первый символ кириллицы — проверяем хвост слова
 check "ввод в поле страницы (ASCII + кириллица)" "ривет"

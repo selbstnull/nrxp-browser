@@ -12,7 +12,7 @@ PORT=$((20000 + RANDOM % 20000))
 SRV=$!
 for _ in $(seq 1 30); do ss -tln | grep -q ":$PORT " && break; sleep 0.2; done
 URL="http://127.0.0.1:$PORT/dialogs.html"
-TOP=${TOOLBAR_PX:-56}
+TOP=${TOOLBAR_PX:-85}
 REMEMBER_X=${REMEMBER_X:-484}; REMEMBER_Y=${REMEMBER_Y:-158}; ALLOW_X=${ALLOW_X:-514}; ALLOW_Y=${ALLOW_Y:-179}
 
 gui_launch "$NRB" --profile "$TMP/profile" "$URL"; sleep 3

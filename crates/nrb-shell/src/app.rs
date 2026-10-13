@@ -733,10 +733,7 @@ impl Running {
         shared.adblock_on.set(settings.adblock);
         apply_engine_policy(&settings, config.servo.webrtc_forbidden);
         *shared.permissions.borrow_mut() = load_permissions(&store);
-        egui_ctx.set_visuals(match settings.theme {
-            nrb_profile::Theme::Dark => egui::Visuals::dark(),
-            nrb_profile::Theme::Light => egui::Visuals::light(),
-        });
+        crate::theme::apply(&egui_ctx, settings.theme);
 
         let mut running = Self {
             window,
@@ -844,6 +841,12 @@ impl Running {
     }
 
     fn build_tab(&self, url: Url) -> WebView {
+        // Пустая вкладка — страница новой вкладки в цветах темы (вместо белого about:blank).
+        let url = if url.as_str() == "about:blank" {
+            crate::start_page::url(&crate::theme::current(&self.egui_ctx))
+        } else {
+            url
+        };
         let mut builder = WebViewBuilder::new(&self.servo, self.content_ctx.clone())
             .url(url)
             .hidpi_scale_factor(euclid_compat::scale(self.shared.scale.get()))
@@ -917,7 +920,7 @@ impl Running {
         }
         if let Some(tab) = self.active_tab() {
             let url = tab.url().map(|u| u.to_string()).unwrap_or_default();
-            self.toolbar.url_input = if url == "about:blank" {
+            self.toolbar.url_input = if crate::start_page::is_blank(&url) {
                 String::new()
             } else {
                 url
@@ -1075,6 +1078,9 @@ impl Running {
             if let Some(tab) = self.tabs.iter().find(|tab| tab.id() == id)
                 && let Some(url) = tab.url()
             {
+                if crate::start_page::is_blank(url.as_str()) {
+                    continue;
+                }
                 let title = tab.page_title().unwrap_or_default();
                 let _ = self.store.record_visit(url.as_str(), &title);
             }
@@ -1082,6 +1088,7 @@ impl Running {
         for id in titled {
             if let Some(tab) = self.tabs.iter().find(|tab| tab.id() == id)
                 && let (Some(url), Some(title)) = (tab.url(), tab.page_title())
+                && !crate::start_page::is_blank(url.as_str())
             {
                 let _ = self.store.update_title(url.as_str(), &title);
             }
@@ -1099,7 +1106,11 @@ impl Running {
                 .iter()
                 .filter_map(|tab| {
                     tab.url().map(|url| nrb_profile::TabState {
-                        url: url.to_string(),
+                        url: if crate::start_page::is_blank(url.as_str()) {
+                            "about:blank".to_owned()
+                        } else {
+                            url.to_string()
+                        },
                         title: tab.page_title().unwrap_or_default(),
                     })
                 })
@@ -1266,10 +1277,7 @@ impl Running {
         for tab in &self.tabs {
             self.apply_audio_config(tab);
         }
-        self.egui_ctx.set_visuals(match self.settings.theme {
-            nrb_profile::Theme::Dark => egui::Visuals::dark(),
-            nrb_profile::Theme::Light => egui::Visuals::light(),
-        });
+        crate::theme::apply(&self.egui_ctx, self.settings.theme);
         if let Some(dir) = &self.profile_dir
             && let Err(error) = self.settings.save(dir)
         {

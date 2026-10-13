@@ -9,7 +9,7 @@ NRB="${1:-target/debug/nrb}"
 gui_launch "$NRB" ${NRB_ARGS:-} "file://$PWD/tests/fixtures/dialogs.html"
 sleep 3
 check "страница загружена" "dialogs: ready"
-TOP=${TOOLBAR_PX:-56}   # высота тулбара в пикселях окна (без HiDPI)
+TOP=${TOOLBAR_PX:-85}   # высота тулбара в пикселях окна (без HiDPI)
 
 click 120 $((TOP + 35)); sleep 1; shot 01-alert
 xdotool key Return; sleep 1

@@ -13,6 +13,8 @@ mod nodes;
 mod passwords;
 mod print;
 mod site_data;
+mod start_page;
+mod theme;
 mod ui;
 
 pub use app::{ShellConfig, TunnelStatus, run};

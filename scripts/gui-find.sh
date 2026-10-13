@@ -22,7 +22,7 @@ import sys
 from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB"); w, h = im.size
 px = im.load(); yellow = orange = sx = sy = 0
-for y in range(56, h):            # ниже тулбара
+for y in range(85, h):            # ниже тулбара
     for x in range(w):
         r, g, b = px[x, y]
         if r > 240 and 225 <= g <= 250 and 110 <= b <= 160: yellow += 1
