@@ -1,3 +1,7 @@
+// Windows: сборка с движком — оконное приложение (без чёрной консоли при запуске двойным щелчком). Вывод CLI-команд
+// (`nrb version`, `snap`, `node …`) возвращает `attach_parent_console` при запуске из терминала.
+#![cfg_attr(all(windows, feature = "servo"), windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -186,7 +190,53 @@ enum Command {
     Version,
 }
 
+/// Подключает вывод к консоли родителя (cmd/PowerShell/Windows Terminal), если процесс запущен из неё: у GUI-подсистемы
+/// своих stdio нет. При запуске из проводника родительской консоли нет — тогда ничего не делаем.
+#[cfg(all(windows, feature = "servo"))]
+fn attach_parent_console() {
+    use std::os::windows::io::IntoRawHandle;
+
+    type Handle = *mut core::ffi::c_void;
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+        fn GetStdHandle(which: u32) -> Handle;
+        fn SetStdHandle(which: u32, handle: Handle) -> i32;
+    }
+    // Свои stdio (перенаправление в файл/пайп) не трогаем: подменяем только отсутствующие.
+    let missing = |which: u32| {
+        let handle = unsafe { GetStdHandle(which) };
+        handle.is_null() || handle as isize == -1
+    };
+    if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } == 0 {
+        return;
+    }
+    let open = |name: &str, read: bool| {
+        std::fs::OpenOptions::new()
+            .read(read)
+            .write(!read)
+            .open(name)
+            .ok()
+            .map(|f| f.into_raw_handle() as Handle)
+    };
+    if missing(STD_INPUT_HANDLE) && let Some(h) = open("CONIN$", true) {
+        unsafe { SetStdHandle(STD_INPUT_HANDLE, h) };
+    }
+    if missing(STD_OUTPUT_HANDLE) && let Some(h) = open("CONOUT$", false) {
+        unsafe { SetStdHandle(STD_OUTPUT_HANDLE, h) };
+    }
+    if missing(STD_ERROR_HANDLE) && let Some(h) = open("CONOUT$", false) {
+        unsafe { SetStdHandle(STD_ERROR_HANDLE, h) };
+    }
+}
+
 fn main() {
+    #[cfg(all(windows, feature = "servo"))]
+    attach_parent_console();
     // Контент-процесс Servo (мультипроцесс): тот же бинарь с `--content-process <токен>`; ни логирования, ни разбора аргументов.
     #[cfg(feature = "servo")]
     if nrb_engine_servo::run_content_process_if_requested() {

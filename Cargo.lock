@@ -4756,6 +4756,8 @@ checksum = "d5892d91814b6681a2406067efec53abe9ba4fe8748dcd99e4f5a96a99a05ac0"
 dependencies = [
  "bindgen",
  "cc",
+ "gl_generator",
+ "libz-sys",
  "walkdir",
 ]
 
@@ -7603,6 +7605,7 @@ dependencies = [
  "ipc-channel",
  "keyboard-types",
  "log",
+ "mozangle",
  "ohos-pasteboard",
  "parking_lot",
  "rustc-hash",

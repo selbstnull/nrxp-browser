@@ -27,3 +27,8 @@ tracing.workspace = true
 url.workspace = true
 dpi = "0.1"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+
+# Windows: WGL-путь surfman не делает контекст текущим до загрузки GL-функций (glow паникует «Reading GL_VERSION failed» при старте окна).
+# Как в servoshell — GL через ANGLE (mozangle): рядом с nrb.exe появляются libEGL.dll и libGLESv2.dll.
+[target.'cfg(windows)'.dependencies]
+servo = { version = "=0.7.0", default-features = false, features = ["no-wgl"] }

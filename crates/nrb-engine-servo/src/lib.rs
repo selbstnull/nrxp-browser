@@ -17,6 +17,9 @@ use servo::{
     WebViewBuilder, WebViewDelegate,
 };
 
+/// Встроенный скрипт совместимости с сайтами (`document.all`) — внедряется и в окно, и в `snap`.
+pub const COMPAT_JS: &str = include_str!("compat.js");
+
 /// Настройки движка, не зависящие от конкретной страницы.
 #[derive(Debug, Clone, Default)]
 pub struct ServoConfig {
@@ -388,8 +391,9 @@ impl ServoSnapshotter {
         .build();
         let state = Rc::new(PageState::default());
         servo.set_delegate(Rc::new(ConsoleDelegate(state.clone())));
-        let user_content = (!config.user_scripts.is_empty()).then(|| {
+        let user_content = Some({
             let manager = Rc::new(servo::UserContentManager::new(&servo));
+            manager.add_script(Rc::new(servo::UserScript::new(COMPAT_JS.to_owned(), None)));
             for js in &config.user_scripts {
                 manager.add_script(Rc::new(servo::UserScript::new(js.clone(), None)));
             }

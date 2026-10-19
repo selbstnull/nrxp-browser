@@ -132,6 +132,8 @@ impl EventLoopWaker for Waker {
 
 /// То, что делегат Servo кладёт для оболочки (Servo зовёт делегата из нашего же потока во время `spin_event_loop`).
 struct Shared {
+    /// Кто сколько раз просил перерисовку за интервал диагностики (см. `Shared::redraw_why`).
+    redraw_reasons: RefCell<std::collections::HashMap<String, u32>>,
     window: RefCell<Option<Rc<Window>>>,
     content: RefCell<Option<Rc<OffscreenRenderingContext>>>,
     scale: Cell<f32>,
@@ -212,8 +214,59 @@ fn origin_of(webview: &WebView) -> String {
 
 impl Shared {
     fn redraw(&self) {
+        self.redraw_why("redraw");
+    }
+
+    /// Просит перерисовку; `why` — кто просил (счётчик в диагностике простоя `RUST_LOG=nrb_shell=debug`).
+    fn redraw_why(&self, why: &'static str) {
+        *self.redraw_reasons.borrow_mut().entry(why.to_owned()).or_insert(0) += 1;
         if let Some(window) = self.window.borrow().as_ref() {
             window.request_redraw();
+        }
+    }
+}
+
+/// Время одной фазы кадра за интервал диагностики: среднее и максимум, мс.
+#[derive(Default)]
+struct PhaseTime {
+    sum: Duration,
+    max: Duration,
+    n: u32,
+}
+
+impl PhaseTime {
+    fn add(&mut self, d: Duration) {
+        self.sum += d;
+        self.max = self.max.max(d);
+        self.n += 1;
+    }
+
+    fn take(&mut self) -> String {
+        let t = std::mem::take(self);
+        format!(
+            "{:.1}/макс {:.1}",
+            t.sum.as_secs_f64() * 1000.0 / f64::from(t.n.max(1)),
+            t.max.as_secs_f64() * 1000.0
+        )
+    }
+}
+
+struct FrameStats {
+    page: PhaseTime,
+    egui: PhaseTime,
+    present: PhaseTime,
+    gap_max: Duration,
+    last_end: Instant,
+}
+
+impl Default for FrameStats {
+    fn default() -> Self {
+        Self {
+            page: PhaseTime::default(),
+            egui: PhaseTime::default(),
+            present: PhaseTime::default(),
+            gap_max: Duration::ZERO,
+            last_end: Instant::now(),
         }
     }
 }
@@ -221,17 +274,38 @@ impl Shared {
 struct Delegate(Rc<Shared>);
 
 impl WebViewDelegate for Delegate {
+    /// Размер экрана и окна для `screen.width`, `screen.availWidth`, `window.outerWidth`…: без этого страница видит экран 0×0,
+    /// а YouTube по такому «экрану» не предлагает качество выше 1080p.
+    fn screen_geometry(&self, _webview: WebView) -> Option<nrb_engine_servo::servo::ScreenGeometry> {
+        use nrb_engine_servo::servo::{DeviceIntPoint, DeviceIntRect, DeviceIntSize, ScreenGeometry};
+        let window = self.0.window.borrow().clone()?;
+        let monitor = window.current_monitor().or_else(|| window.primary_monitor())?;
+        let screen = monitor.size();
+        let position = window.outer_position().unwrap_or_default();
+        let outer = window.outer_size();
+        let screen = DeviceIntSize::new(screen.width as i32, screen.height as i32);
+        Some(ScreenGeometry {
+            size: screen,
+            // Панель задач неизвестна — считаем весь экран доступным.
+            available_size: screen,
+            window_rect: DeviceIntRect::from_origin_and_size(
+                DeviceIntPoint::new(position.x, position.y),
+                DeviceIntSize::new(outer.width as i32, outer.height as i32),
+            ),
+        })
+    }
+
     fn notify_new_frame_ready(&self, _webview: WebView) {
-        self.0.redraw();
+        self.0.redraw_why("notify_new_frame_ready");
     }
 
     fn notify_url_changed(&self, _webview: WebView, _url: Url) {
-        self.0.redraw();
+        self.0.redraw_why("notify_url_changed");
     }
 
     fn notify_page_title_changed(&self, webview: WebView, _title: Option<String>) {
         self.0.titled.borrow_mut().push(webview.id());
-        self.0.redraw();
+        self.0.redraw_why("notify_page_title_changed");
     }
 
     fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
@@ -241,7 +315,7 @@ impl WebViewDelegate for Delegate {
         if matches!(status, LoadStatus::HeadParsed | LoadStatus::Complete) {
             self.0.audio_apply.borrow_mut().push(webview.id());
         }
-        self.0.redraw();
+        self.0.redraw_why("notify_load_status_changed");
     }
 
     /// Движок сообщил, что ответ навигации — файл (N3b): принимаем и передаём тело обработчику загрузок. Без обработчика
@@ -263,7 +337,7 @@ impl WebViewDelegate for Delegate {
             .engine_downloads
             .borrow_mut()
             .push((incoming, stream));
-        self.0.redraw();
+        self.0.redraw_why("request_download");
     }
 
     /// Блокировка рекламы и трекеров до сети. Главный документ не трогаем; страница верхнего уровня — источник для `$third-party`.
@@ -285,7 +359,7 @@ impl WebViewDelegate for Delegate {
                     WebResourceResponse::new(url).status_code(http::StatusCode::NO_CONTENT),
                 )
                 .finish();
-                self.0.redraw();
+                self.0.redraw_why("load_web_resource");
                 return;
             }
         }
@@ -304,26 +378,26 @@ impl WebViewDelegate for Delegate {
         if blocker.check(url.as_str(), &source, kind) == nrb_adblock::Verdict::Block {
             self.0.blocked.set(self.0.blocked.get() + 1);
             load.intercept(WebResourceResponse::new(url)).cancel();
-            self.0.redraw();
+            self.0.redraw_why("load_web_resource");
         }
     }
 
     fn notify_history_changed(&self, _webview: WebView, _entries: Vec<Url>, _current: usize) {
-        self.0.redraw();
+        self.0.redraw_why("notify_history_changed");
     }
 
     fn notify_cursor_changed(&self, _webview: WebView, _cursor: Cursor) {
-        self.0.redraw();
+        self.0.redraw_why("notify_cursor_changed");
     }
 
     fn notify_favicon_changed(&self, webview: WebView) {
         self.0.favicons.borrow_mut().push(webview.id());
-        self.0.redraw();
+        self.0.redraw_why("notify_favicon_changed");
     }
 
     fn notify_fullscreen_state_changed(&self, _webview: WebView, fullscreen: bool) {
         self.0.fullscreen.set(Some(fullscreen));
-        self.0.redraw();
+        self.0.redraw_why("notify_fullscreen_state_changed");
     }
 
     fn request_permission(&self, webview: WebView, request: PermissionRequest) {
@@ -360,7 +434,7 @@ impl WebViewDelegate for Delegate {
                 decision: None,
             },
         ));
-        self.0.redraw();
+        self.0.redraw_why("request_permission");
     }
 
     fn request_authentication(&self, webview: WebView, request: AuthenticationRequest) {
@@ -376,7 +450,7 @@ impl WebViewDelegate for Delegate {
                 pass: String::new(),
             },
         ));
-        self.0.redraw();
+        self.0.redraw_why("request_authentication");
     }
 
     fn show_embedder_control(&self, webview: WebView, control: EmbedderControl) {
@@ -414,17 +488,17 @@ impl WebViewDelegate for Delegate {
             _ => return,
         };
         self.0.modals.borrow_mut().push((Some(id), modal));
-        self.0.redraw();
+        self.0.redraw_why("show_embedder_control");
     }
 
     fn hide_embedder_control(&self, _webview: WebView, id: EmbedderControlId) {
         self.0.hidden_controls.borrow_mut().push(id);
-        self.0.redraw();
+        self.0.redraw_why("hide_embedder_control");
     }
 
     fn notify_closed(&self, webview: WebView) {
         self.0.closed.borrow_mut().push(webview);
-        self.0.redraw();
+        self.0.redraw_why("notify_closed");
     }
 
     fn notify_crashed(&self, webview: WebView, reason: String, _backtrace: Option<String>) {
@@ -448,7 +522,7 @@ impl WebViewDelegate for Delegate {
             .hidpi_scale_factor(euclid_compat::scale(self.0.scale.get()))
             .build();
         self.0.new_tabs.borrow_mut().push(webview);
-        self.0.redraw();
+        self.0.redraw_why("request_create_new");
     }
 }
 
@@ -504,6 +578,16 @@ struct Running {
     print_job: Option<PrintJob>,
     print_notice: Option<(String, Instant)>,
     next_badge_refresh: std::time::Instant,
+    /// Перерисовку кто-то запросил (иначе `RedrawRequested` пришёл от ОС: WM_PAINT/обновление окна).
+    redraw_requested: std::cell::Cell<bool>,
+    /// Накопленная, ещё не отданная движку прокрутка колесом (пиксели), и время последней порции.
+    wheel_pending: (f64, f64),
+    wheel_tick: Instant,
+    frame_stats: FrameStats,
+    frames: u32,
+    frames_repaint_egui: u32,
+    frames_page_animating: u32,
+    frames_since: Instant,
     /// Звук вкладок: опрос раз в 1,5 с; заглушённые вкладки и последнее известное «звучит».
     next_audio_poll: std::time::Instant,
     webrtc_forbidden: bool,
@@ -679,6 +763,10 @@ impl Running {
         let user_content = Some({
             let manager = Rc::new(UserContentManager::new(&servo));
             // Звуковая политика (автовоспроизведение, заглушение вкладки) — всегда, до пользовательских скриптов.
+            manager.add_script(Rc::new(UserScript::new(
+                nrb_engine_servo::COMPAT_JS.to_owned(),
+                None,
+            )));
             manager.add_script(Rc::new(UserScript::new(AUDIO_JS.to_owned(), None)));
             manager.add_script(Rc::new(UserScript::new(PWM_JS.to_owned(), None)));
             for js in &config.userscripts {
@@ -688,6 +776,7 @@ impl Running {
         });
 
         let shared = Rc::new(Shared {
+            redraw_reasons: RefCell::default(),
             window: RefCell::new(Some(window.clone())),
             content: RefCell::new(Some(content_ctx.clone())),
             scale: Cell::new(scale),
@@ -771,6 +860,14 @@ impl Running {
             exit: false,
             tunnel: config.tunnel,
             next_badge_refresh: std::time::Instant::now(),
+            redraw_requested: std::cell::Cell::new(false),
+            wheel_pending: (0.0, 0.0),
+            wheel_tick: Instant::now(),
+            frame_stats: FrameStats::default(),
+            frames: 0,
+            frames_repaint_egui: 0,
+            frames_page_animating: 0,
+            frames_since: Instant::now(),
             next_audio_poll: std::time::Instant::now(),
             webrtc_forbidden: config.servo.webrtc_forbidden,
             suspended: false,
@@ -832,12 +929,39 @@ impl Running {
         Ok(running)
     }
 
+    /// Просит перерисовку и помнит откуда (диагностика простоя: `RUST_LOG=nrb_shell=debug`).
+    #[track_caller]
+    fn request_redraw(&self) {
+        let at = std::panic::Location::caller();
+        *self
+            .shared
+            .redraw_reasons
+            .borrow_mut()
+            .entry(format!("{}:{}", at.file().rsplit(['/', '\\']).next().unwrap_or(""), at.line()))
+            .or_insert(0) += 1;
+        self.redraw_requested.set(true);
+        self.window.request_redraw();
+    }
+
     fn content_size(&self) -> PhysicalSize<u32> {
         let size = self.window.inner_size();
         PhysicalSize::new(
             size.width.max(1),
             size.height.saturating_sub(self.toolbar_px).max(1),
         )
+    }
+
+    /// Подгоняет область страницы под окно. Контекст НЕ ресайзим напрямую: `WebView::resize` сам меняет размер контекста и
+    /// обновляет viewport страницы, но делает это только если размер контекста ещё старый — иначе раскладка остаётся
+    /// на размере запуска, а картинка обрезается.
+    fn resize_content(&self) {
+        let content = self.content_size();
+        if self.tabs.is_empty() {
+            self.content_ctx.resize(content);
+        }
+        for tab in &self.tabs {
+            tab.resize(content);
+        }
     }
 
     fn build_tab(&self, url: Url) -> WebView {
@@ -887,7 +1011,7 @@ impl Running {
         }
         self.active = index;
         self.sync_url_bar(true);
-        self.window.request_redraw();
+        self.request_redraw();
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -936,6 +1060,7 @@ impl Running {
             .borrow_mut()
             .drain(..)
             .collect();
+        let mut changed = !accepted.is_empty();
         if let Some(handler) = self.downloads.clone() {
             for (incoming, mut stream) in accepted {
                 let events = std::iter::from_fn(move || {
@@ -956,8 +1081,12 @@ impl Running {
             .drain(..)
             .collect();
         let Some(handler) = self.downloads.clone() else {
+            if changed {
+                self.request_redraw();
+            }
             return;
         };
+        changed |= !pending.is_empty();
         for (url, referer) in pending {
             let cookies = self
                 .servo
@@ -974,7 +1103,10 @@ impl Running {
             );
             self.downloads_window.open = true;
         }
-        self.window.request_redraw();
+        // Вызывается из `spin()` на каждое событие: без изменений перерисовку не просим (иначе цикл крутится вхолостую).
+        if changed {
+            self.request_redraw();
+        }
     }
 
     fn start_print(&mut self) {
@@ -1025,7 +1157,7 @@ impl Running {
                 self.print_job = None;
             }
         }
-        self.window.request_redraw();
+        self.request_redraw();
     }
 
     fn spin(&mut self) {
@@ -1166,6 +1298,9 @@ impl Running {
 
     /// Выполнить последствия кадра менеджера паролей: подстановка в страницу и короткие сообщения.
     fn run_password_effects(&mut self, effects: Vec<PwEffect>) {
+        if effects.is_empty() {
+            return;
+        }
         for effect in effects {
             match effect {
                 PwEffect::Fill {
@@ -1185,7 +1320,7 @@ impl Running {
                 }
             }
         }
-        self.window.request_redraw();
+        self.request_redraw();
     }
 
     /// Скрипт настройки звука вкладки: политика автовоспроизведения из настроек и признак «заглушена».
@@ -1209,7 +1344,7 @@ impl Running {
             self.muted_tabs.insert(tab.id());
         }
         self.apply_audio_config(&tab);
-        self.window.request_redraw();
+        self.request_redraw();
     }
 
     /// Раз в 1,5 с спрашивает у каждой вкладки, звучит ли она, и применяет принесённые ответы.
@@ -1261,7 +1396,7 @@ impl Running {
                 },
             );
         }
-        self.window.request_redraw();
+        self.request_redraw();
     }
 
     /// Перечитывает запомненные решения из профиля (после сброса в настройках).
@@ -1300,14 +1435,14 @@ impl Running {
         }
         let _ = self.store.toggle_bookmark(url.as_str(), &title);
         self.bookmark_cache.0.clear(); // пересчитать звезду
-        self.window.request_redraw();
+        self.request_redraw();
     }
 
     fn set_fullscreen(&mut self, fullscreen: bool) {
         self.fullscreen = fullscreen;
         self.window
             .set_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)));
-        self.window.request_redraw();
+        self.request_redraw();
     }
 
     fn update_favicon(&mut self, id: WebViewId) {
@@ -1336,7 +1471,7 @@ impl Running {
             egui::TextureOptions::LINEAR,
         );
         self.favicons.insert(id, texture);
-        self.window.request_redraw();
+        self.request_redraw();
     }
 
     fn navigate(&mut self, input: &str) {
@@ -1460,7 +1595,7 @@ impl Running {
             _ if ctrl && character == "r" => self.apply(Action::Reload),
             _ => return false,
         }
-        self.window.request_redraw();
+        self.request_redraw();
         true
     }
 
@@ -1490,8 +1625,10 @@ impl Running {
             return;
         }
         let response = self.egui_state.on_window_event(&self.window, &event);
-        if response.repaint {
-            self.window.request_redraw();
+        // `RedrawRequested` egui всегда отвечает «перерисуй»: если на это просить ещё кадр, цикл перерисовки не останавливается
+        // никогда (165 кадров/с на простое). Следующий кадр просит сам `redraw()`, когда egui или страница анимируются.
+        if response.repaint && !matches!(event, WindowEvent::RedrawRequested) {
+            self.request_redraw();
         }
 
         match event {
@@ -1502,12 +1639,8 @@ impl Running {
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::Resized(size) => {
                 self.window_ctx.resize(size);
-                let content = self.content_size();
-                self.content_ctx.resize(content);
-                for tab in &self.tabs {
-                    tab.resize(content);
-                }
-                self.window.request_redraw();
+                self.resize_content();
+                self.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.shared.scale.set(scale_factor as f32);
@@ -1583,20 +1716,41 @@ impl Running {
                 if self.over_content()
                     && let Some(tab) = self.active_tab()
                 {
-                    let (x, y, mode) = match delta {
-                        MouseScrollDelta::LineDelta(dx, dy) => (
-                            f64::from(dx) * 76.0,
-                            f64::from(dy) * 76.0,
-                            WheelMode::DeltaLine,
-                        ),
+                    match delta {
+                        // Колесо с щелчками (Ctrl — масштаб страницы — отдаём сразу): копим и отдаём движку порциями
+                        // по кадрам (`tick_smooth_scroll`), как браузеры делают плавную прокрутку.
+                        MouseScrollDelta::LineDelta(dx, dy) if !self.modifiers.control_key() => {
+                            if self.wheel_pending == (0.0, 0.0) {
+                                self.wheel_tick = Instant::now();
+                            }
+                            self.wheel_pending.0 += f64::from(dx) * 76.0;
+                            self.wheel_pending.1 += f64::from(dy) * 76.0;
+                            self.request_redraw();
+                        },
+                        MouseScrollDelta::LineDelta(dx, dy) => {
+                            tab.notify_input_event(InputEvent::Wheel(WheelEvent::new(
+                                WheelDelta {
+                                    x: f64::from(dx) * 76.0,
+                                    y: f64::from(dy) * 76.0,
+                                    z: 0.0,
+                                    mode: WheelMode::DeltaLine,
+                                },
+                                self.content_point(),
+                            )));
+                        },
+                        // Тачпад уже шлёт мелкие пиксельные шаги.
                         MouseScrollDelta::PixelDelta(delta) => {
-                            (delta.x, delta.y, WheelMode::DeltaPixel)
-                        }
-                    };
-                    tab.notify_input_event(InputEvent::Wheel(WheelEvent::new(
-                        WheelDelta { x, y, z: 0.0, mode },
-                        self.content_point(),
-                    )));
+                            tab.notify_input_event(InputEvent::Wheel(WheelEvent::new(
+                                WheelDelta {
+                                    x: delta.x,
+                                    y: delta.y,
+                                    z: 0.0,
+                                    mode: WheelMode::DeltaPixel,
+                                },
+                                self.content_point(),
+                            )));
+                        },
+                    }
                 }
             }
             WindowEvent::KeyboardInput {
@@ -1625,7 +1779,17 @@ impl Running {
                 }
             }
             WindowEvent::RedrawRequested if self.suspended => {}
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::RedrawRequested => {
+                if !self.redraw_requested.replace(false) {
+                    *self
+                        .shared
+                        .redraw_reasons
+                        .borrow_mut()
+                        .entry("ОС (WM_PAINT)".to_owned())
+                        .or_insert(0) += 1;
+                }
+                self.redraw()
+            },
             _ => {}
         }
     }
@@ -1666,8 +1830,52 @@ impl Running {
         }
     }
 
+    /// Плавная прокрутка колесом: накопленную дельту отдаём движку долями на каждом кадре (экспоненциальное
+    /// затухание, постоянная времени ~45 мс — до 95% за ~135 мс). Рывок на целый щелчок в один кадр был «дёрганьем».
+    fn tick_smooth_scroll(&mut self) {
+        if self.wheel_pending == (0.0, 0.0) {
+            return;
+        }
+        let now = Instant::now();
+        let dt = now.duration_since(self.wheel_tick).as_secs_f64().min(0.1);
+        self.wheel_tick = now;
+        let share = 1.0 - (-dt / 0.045).exp();
+        let step = |pending: f64| {
+            let part = pending * share;
+            // Остаток меньше пикселя — отдаём целиком, чтобы анимация закончилась.
+            if (pending - part).abs() < 0.5 { pending } else { part }
+        };
+        let (px, py) = (step(self.wheel_pending.0), step(self.wheel_pending.1));
+        self.wheel_pending.0 -= px;
+        self.wheel_pending.1 -= py;
+        if (px, py) == (0.0, 0.0) {
+            return;
+        }
+        if self.over_content()
+            && let Some(tab) = self.active_tab()
+        {
+            tab.notify_input_event(InputEvent::Wheel(WheelEvent::new(
+                WheelDelta {
+                    x: px,
+                    y: py,
+                    z: 0.0,
+                    mode: WheelMode::DeltaPixel,
+                },
+                self.content_point(),
+            )));
+        } else {
+            self.wheel_pending = (0.0, 0.0);
+        }
+    }
+
     fn redraw(&mut self) {
         use egui_glow::glow::HasContext as _;
+        self.tick_smooth_scroll();
+        let frame_started = Instant::now();
+        self.frame_stats.gap_max = self
+            .frame_stats
+            .gap_max
+            .max(frame_started.duration_since(self.frame_stats.last_end));
         self.window_ctx.prepare_for_rendering();
         let size = self.window.inner_size();
         let scale = self.window.scale_factor() as f32;
@@ -1750,11 +1958,14 @@ impl Running {
         }
 
         // Страница: Servo рисует в offscreen, затем блит в нижнюю часть окна; тулбар egui рисуется поверх верхней.
+        let phase = Instant::now();
         if let Some(tab) = self.tabs.get(self.active) {
             tab.paint();
             self.blit_content();
             self.window.set_cursor(cursor_icon(tab.cursor()));
         }
+        self.frame_stats.page.add(phase.elapsed());
+        let phase = Instant::now();
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let (active_index, active_origin) = (
@@ -1871,7 +2082,7 @@ impl Running {
                     .insert(key.clone(), *allow);
             }
             self.modals.pop_front();
-            self.window.request_redraw();
+            self.request_redraw();
         }
         self.egui_state
             .handle_platform_output(&self.window, output.platform_output.clone());
@@ -1885,6 +2096,8 @@ impl Running {
             &mut output.textures_delta,
         );
 
+        self.frame_stats.egui.add(phase.elapsed());
+
         // Фактическая высота тулбара (в пикселях) → размер области страницы.
         let toolbar_px = if self.fullscreen {
             0
@@ -1894,25 +2107,49 @@ impl Running {
         if toolbar_px != self.toolbar_px {
             self.toolbar_px = toolbar_px;
             self.shared.toolbar_px.set(toolbar_px);
-            let content = self.content_size();
-            self.content_ctx.resize(content);
-            for tab in &self.tabs {
-                tab.resize(content);
-            }
+            self.resize_content();
         }
 
+        let phase = Instant::now();
         self.window_ctx.present();
+        self.frame_stats.present.add(phase.elapsed());
 
         for action in actions {
             self.apply(action);
         }
-        if self.egui_ctx.has_requested_repaint()
-            || self
-                .tabs
-                .get(self.active)
-                .is_some_and(|tab| tab.animating())
-        {
-            self.window.request_redraw();
+        let egui_repaint = self.egui_ctx.has_requested_repaint();
+        let page_animating = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|tab| tab.animating());
+        // Диагностика простоя: сколько кадров в секунду и что просит следующий (`RUST_LOG=nrb_shell=debug`).
+        self.frames += 1;
+        self.frames_repaint_egui += u32::from(egui_repaint);
+        self.frames_page_animating += u32::from(page_animating);
+        if self.frames_since.elapsed() >= Duration::from_secs(2) {
+            let secs = self.frames_since.elapsed().as_secs_f32();
+            let mut why: Vec<_> = self.shared.redraw_reasons.borrow_mut().drain().collect();
+            why.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            tracing::debug!(
+                target: "nrb_shell::redraw",
+                "кадров/с {:.1} (egui просит {}, анимация страницы {}); мс на кадр: страница {}, egui {}, present {}; макс. пауза между кадрами {:.0} мс; просили: {:?}",
+                self.frames as f32 / secs,
+                self.frames_repaint_egui,
+                self.frames_page_animating,
+                self.frame_stats.page.take(),
+                self.frame_stats.egui.take(),
+                self.frame_stats.present.take(),
+                std::mem::take(&mut self.frame_stats.gap_max).as_secs_f64() * 1000.0,
+                why
+            );
+            self.frames = 0;
+            self.frames_repaint_egui = 0;
+            self.frames_page_animating = 0;
+            self.frames_since = Instant::now();
+        }
+        self.frame_stats.last_end = Instant::now();
+        if egui_repaint || page_animating || self.wheel_pending != (0.0, 0.0) {
+            self.request_redraw();
         }
     }
 }
